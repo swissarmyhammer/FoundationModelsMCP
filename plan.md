@@ -628,6 +628,16 @@ what was dropped** rather than silently misrepresenting the schema.
    - **Deferred/registry servers** keep connecting in the background (same backoff
      policy) and become searchable as they come online; their failure never blocks
      startup.
+   - **A late connect's effect depends on *where its tools live*** — the rebuild
+     trigger is the contribution, not the lateness:
+     - **Directly-loaded tools (alwaysLoad in the fixed `tools:` array)** can't
+       appear in a live session, so a late connect (or reconnect) of such a server
+       **justifies a transcript/session rebuild** — that's exactly why it was
+       essential.
+     - **A server feeding the search/registry path** needs **no rebuild**: the
+       session already holds the stable `MCPSearchTool`/`MCPCallTool`, so the
+       registry just refreshes and there are simply *more tools to discover*.
+       Session stays warm.
    - **Direct-add session on `tools/list_changed` → host's call.** Direct-add is
      the explicit frozen snapshot; the package **surfaces the change event but does
      not auto-rebuild** (that would bust the cache invisibly). Hosts wanting live
