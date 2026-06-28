@@ -187,11 +187,28 @@ let registry = try await MCPToolRegistry.Builder()
     .add(server: filesystem, mode: .deferred)
     .add(server: github, mode: .deferred)
     .add(tool: clock, mode: .alwaysLoad)
-    .searchAgent(instructions: "Pick the fewest tools that accomplish the task…",
-                 model: .default, effort: .medium, maxResults: 5)
+    .searchAgent(.default)            // an enumerated preset (full session + instructions)
     .elicitation(coordinator)
-    .build()                 // connects servers, discovers tools (async)
+    .build()                          // connects servers, discovers tools (async)
 let session = try await LanguageModelSession(mcp: registry, instructions: …)
+```
+
+**The search agent is a whole session, not just a model.** Picking the tools is
+a complete `LanguageModelSession` — instructions, model, and effort together, not
+a lone model parameter. So `searchAgent(_:)` takes a **`SearchAgent` config** with:
+
+- **enumerated defaults** — e.g. `.default` (and any other named presets we ship),
+  each a curated instructions + model + effort + `maxResults` bundle; and
+- **`.custom`** — the host supplies its own builder that **constructs the unique
+  session used to generate the selection** (its own instructions/model/effort,
+  even extra context), given the candidate catalog. Full control when a preset
+  doesn't fit.
+
+```swift
+.searchAgent(.default)
+.searchAgent(.custom { catalog in
+    LanguageModelSession(instructions: myInstructions(for: catalog))   // host-owned
+})
 ```
 
 `build()` is the async discovery point; the result is an `MCPToolProvider`.
@@ -278,11 +295,14 @@ array at construction, so *where the tools live* decides how faults are handled:
   is *why* the registry path is the default for many or unreliable servers.
 
 **Startup blocking mirrors Claude Code.** `alwaysLoad` tools must be present when
-the first prompt is built, so they **block session construction until connect**
-(bounded by a timeout); deferred/registry servers connect in the **background**
-and become searchable as they come online. `MCPServer` therefore exposes async
-readiness and a state (connecting / ready / faulted); a faulted server is simply
-absent from search until it recovers, rather than failing the whole session.
+the first prompt is built, so they **block session construction until connect**,
+**retrying with exponential backoff** (they were declared essential, so a slow or
+flaky connect is retried, not failed-fast; the build hard-fails only when backoff
+is exhausted). Deferred/registry servers connect in the **background** (same
+backoff) and become searchable as they come online. `MCPServer` therefore exposes
+async readiness and a state (connecting / ready / faulted); a faulted *deferred*
+server is simply absent from search until it recovers, rather than failing the
+whole session.
 
 ## Uniform entry point: one `MCPToolProvider` protocol
 
@@ -519,16 +539,20 @@ what was dropped** rather than silently misrepresenting the schema.
 - **Resilience (decided):** the **registry path keeps the session warm** across
   late connects / faults / reconnects / `tools/list_changed` (refresh, no
   rebuild); **direct-add is a frozen snapshot** (rebuild to change its tool set).
-  `alwaysLoad` blocks startup until connect (timeout-bounded); other servers
-  connect in the background.
+  `alwaysLoad` blocks startup until connect, **retrying with exponential backoff**
+  (essential ⇒ retry, not fail-fast; hard-fail only when backoff is exhausted);
+  other servers connect in the background.
 - **Uniform entry point (decided):** `MCPTool` / `MCPServer` / `MCPToolRegistry`
   conform to `MCPToolProvider`; `sessionTools() async throws` is the single
   discovery boundary, and `LanguageModelSession(mcp:)` is the one call site.
 - **Registry built via a builder (decided):** `MCPToolRegistry.Builder` assembles
   the registry — servers + per-tool load modes, the elicitation coordinator, and
-  **the search agent's configuration** (instructions, model, effort, max
-  results). `build()` is the async step that connects/discovers and returns a
-  ready registry.
+  **the search agent**. The search agent is a **whole `LanguageModelSession`, not
+  a lone model** — `searchAgent(_:)` takes a `SearchAgent` config: **enumerated
+  defaults** (`.default` + named presets bundling instructions/model/effort/max
+  results) **or `.custom`** (host supplies a builder that constructs the unique
+  selection session from the candidate catalog). `build()` is the async step that
+  connects/discovers and returns a ready registry.
 
 ### Still open
 
@@ -560,27 +584,54 @@ what was dropped** rather than silently misrepresenting the schema.
    accepted: surfacing is **append-only (no mid-session removal)**; surfaced
    tools accrue until trimmed (M5). (Custom segments themselves are still pinned
    by the M8 spike — item 4.)
-6. ✅ **Search tuning — decided.** Sub-session = `.default` model, `.medium`
-   effort. Returns **ranked top-N picks (default cap 5)** + rationale, not just
-   one. **`MCPSearchTool` is a pure read: it returns picks; the *parent* surfaces
-   them** (appends the custom segment) — search never mutates the transcript, so
-   the one transcript-write stays an explicit, debuggable parent step (no
-   auto-surface). Catalog: full into the sub-session for v1, but **lexical
+6. ✅ **Search tuning — decided.** The search agent is a **whole
+   `LanguageModelSession`, not just a model** — instructions + model + effort
+   together. Configured via `Builder.searchAgent(_:)` as a **`SearchAgent` config**:
+   **enumerated defaults** (`.default` + any named presets, each bundling
+   instructions/model/effort/`maxResults`) **or `.custom`**, where the host
+   supplies its own builder that constructs the unique session that generates the
+   selection (given the candidate catalog). Returns **ranked top-N picks (default
+   cap 5)** + rationale. **`MCPSearchTool` is a pure read: it returns picks; the
+   *parent* surfaces them** (appends the custom segment) — search never mutates the
+   transcript, so the one transcript-write stays an explicit, debuggable parent
+   step (no auto-surface). Catalog: full into the sub-session for v1, but **lexical
    pre-filter + log when it exceeds a token budget** so the sub-session's own
-   context doesn't blow up. (model/effort/maxResults are `Builder.searchAgent(…)`
-   config.)
-7. **Cross-field constraint in `MCPCallTool`** — can `tool` be constrained to the
-   chosen `server`'s tools (a dependent `anyOf`), or only to the global union of
-   tool names? If dependent enums aren't expressible at runtime, validate the
-   (server, tool) pair after generation and re-prompt on mismatch.
-8. **Agent-elicitation arg shape** — does `MCPElicitationTool` take a full
-   `requestedSchema` (the model generates the flat-primitive schema, constrained)
-   or a simpler field list? And how URL-mode / secret elicitation surfaces to the
-   coordinator.
-9. **Lifecycle policy** — the `alwaysLoad` connect-timeout value; what to do when
-   an `alwaysLoad` server fails to connect (fail the session vs. degrade); and
-   whether to auto-rebuild a *direct-add* session on `tools/list_changed` or
-   leave that to the host.
+   context doesn't blow up.
+7. ✅ **Cross-field constraint in `MCPCallTool` — decided: global union +
+   validate/auto-correct.** Dependent `anyOf` (constrain `tool` to the chosen
+   `server`'s tools) is assumed *not* runtime-expressible — constrained decoding
+   resolves the whole schema before the model picks `server`. So `tool` is
+   `anyOf`-constrained to the **global union** of all known tool names (always a
+   real tool *somewhere*); after generation, validate the `(server, tool)` pair.
+   If the tool's owning server is **unambiguous**, auto-correct `server` (no
+   round-trip); if **ambiguous** (same tool name on multiple servers), re-prompt.
+   Pin whether dependent enums are actually expressible at M7 — if they are,
+   prefer them and keep validate as the safety net.
+8. ✅ **Agent-elicitation arg shape — decided: full `requestedSchema`.**
+   `MCPElicitationTool` takes `{ message, requestedSchema }` and the **model
+   generates the flat-primitive `requestedSchema` itself, constrained** (mirrors
+   exactly what a server sends over the wire — one shape for both elicitation
+   directions, no second representation to maintain). Constrained decoding keeps
+   the generated schema well-formed and within the flat-primitive subset. A field
+   carrying **`secret: true` (or `format: "url"`) routes to URL mode**, never form
+   mode — the coordinator honors it (consistent with the no-secrets-in-form-mode
+   rule).
+9. ✅ **Lifecycle policy — decided.**
+   - **`alwaysLoad` (essential) connect failure → retry with backoff.** An
+     `alwaysLoad` server is *essential*, so a failed/timed-out connect isn't an
+     immediate fail-or-degrade decision: **retry with exponential backoff**
+     (per-attempt connect timeout, bounded total budget / max attempts). The
+     session blocks on these retries during construction. Only if backoff is
+     **exhausted** does it surface a hard failure (it was declared essential).
+     Defaults (per-attempt timeout, backoff base/cap, max attempts) are
+     host-overridable on the Builder.
+   - **Deferred/registry servers** keep connecting in the background (same backoff
+     policy) and become searchable as they come online; their failure never blocks
+     startup.
+   - **Direct-add session on `tools/list_changed` → host's call.** Direct-add is
+     the explicit frozen snapshot; the package **surfaces the change event but does
+     not auto-rebuild** (that would bust the cache invisibly). Hosts wanting live
+     tool-set changes use the registry path.
 
 ## Prior art
 
