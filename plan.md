@@ -150,16 +150,24 @@ specific `MCPTool` adds per-field typing/guides on top; `MCPCallTool` adds
 `anyOf` server/tool names but leaves the params as a valid-JSON object for
 unlimited scale.
 
-**Three load modes** (per tool, or per server as a default for its tools),
-mirroring Claude Code's `alwaysLoad` / deferred:
+**Placement is the only knob — there are no "load modes."** A tool's behavior is
+fully determined by *where you put it*, which is just the two usage modes above —
+so we **drop the `alwaysLoad` / `deferred` / `hidden` enum entirely**:
 
-- **alwaysLoad** — in the session's initial `tools:` with
-  `includesSchemaInInstructions = true`; always visible, always in context. For
-  the few tools needed every turn.
-- **deferred** — not in the initial instructions; discovered via `MCPSearchTool`
-  and **surfaced on demand** (below). The default for scale.
-- **hidden** — in the registry but **never exposed to the model**: not loaded,
-  not searchable, invoked only programmatically / behind policy. *(Decided.)*
+- **Direct (in the session `tools:` array)** — always in context, schema in the
+  instructions. These *are* the "essential" tools; putting one here is the only
+  way to say so, and the only thing that label ever meant. (≈ Claude Code's
+  `alwaysLoad`.)
+- **Registered (in an `MCPToolRegistry`)** — reachable via the search/call tools,
+  surfaced on demand. The default for scale. (≈ Claude Code's `deferred`.) A
+  registered tool's "essentialness" is irrelevant — search treats them all alike.
+- **Neither** — a tool you want neither in context nor model-discoverable is
+  simply not placed: hold the `MCPServer` / `MCPTool` and call it from your own
+  code. That's all "hidden" ever was.
+
+The registry is therefore **purely the searchable layer**. Anything you want
+always in context you add directly *alongside* it via provider composition
+(`LanguageModelSession(mcp: [registry, clock])`) — no per-tool flag, no enum.
 
 ### Agentic search (`MCPSearchTool`)
 
@@ -169,7 +177,7 @@ describes the *task* it's trying to accomplish; `MCPSearchTool.call`:
 1. spins up a **separate, ephemeral `LanguageModelSession`** — its own context
    budget, so the full tool catalog **never pollutes the main session**;
 2. seeds it with **curated tool-selection instructions** plus the registry's
-   **listing of every (non-hidden) tool's name + description**;
+   **listing of every registered tool's name + description**;
 3. has it reason over the catalog and return the best-matching tool(s)
    (constrained output: tool name(s) + rationale); and
 4. returns those to the parent and **surfaces** the chosen tool(s) so the parent
@@ -184,13 +192,13 @@ The search agent is configured where the registry is assembled — via
 
 ```swift
 let registry = try await MCPToolRegistry.Builder()
-    .add(server: filesystem, mode: .deferred)
-    .add(server: github, mode: .deferred)
-    .add(tool: clock, mode: .alwaysLoad)
+    .add(server: filesystem)          // registered → searchable
+    .add(server: github)              // registered → searchable
     .searchAgent(.default)            // an enumerated preset (full session + instructions)
     .elicitation(coordinator)
     .build()                          // connects servers, discovers tools (async)
-let session = try await LanguageModelSession(mcp: registry, instructions: …)
+// `clock` is essential → place it directly, alongside the searchable registry:
+let session = try await LanguageModelSession(mcp: [registry, clock], instructions: …)
 ```
 
 **The search agent is a whole session, not just a model.** Picking the tools is
@@ -239,8 +247,8 @@ the lever for that is transcript trimming (M5), not a teardown API.
 ### The registry is also a UI catalog
 
 `MCPToolRegistry` exposes its full contents as plain, inspectable data — every
-tool's server, name, description, load mode, **and parameters (the full value
-list / schema)** — so a host UI can drive discovery, pickers, and autocomplete
+tool's server, name, description, **and parameters (the full value list /
+schema)** — so a host UI can drive discovery, pickers, and autocomplete
 against it. **This package exposes the values only; it contains no UI or
 autocomplete logic.**
 
@@ -288,21 +296,21 @@ array at construction, so *where the tools live* decides how faults are handled:
   `isError` result so the agent can react — but *new/removed* tools won't appear
   without a rebuild.
 - **Registry + generic tools (the resilient default).** The session holds only
-  the stable `MCPSearchTool` / `MCPCallTool` (+ any alwaysLoad tools), which
+  the stable `MCPSearchTool` / `MCPCallTool` (+ any directly-placed tools), which
   dispatch through the registry **at call time**. So the registry is the mutable
   layer: servers can connect late, fault, reconnect, or change their tool lists
   and the registry just **refreshes — the session stays warm, no rebuild.** This
   is *why* the registry path is the default for many or unreliable servers.
 
-**Startup blocking mirrors Claude Code.** `alwaysLoad` tools must be present when
-the first prompt is built, so they **block session construction until connect**,
-**retrying with exponential backoff** (they were declared essential, so a slow or
-flaky connect is retried, not failed-fast; the build hard-fails only when backoff
-is exhausted). Deferred/registry servers connect in the **background** (same
-backoff) and become searchable as they come online. `MCPServer` therefore exposes
-async readiness and a state (connecting / ready / faulted); a faulted *deferred*
-server is simply absent from search until it recovers, rather than failing the
-whole session.
+**Startup blocking follows from placement.** A directly-placed server's tools must
+be in the `tools:` array when the first prompt is built, so they **block session
+construction until connect**, **retrying with exponential backoff** (these are the
+essential ones, by virtue of being placed directly, so a slow or flaky connect is
+retried, not failed-fast; the build hard-fails only when backoff is exhausted).
+Registered servers connect in the **background** (same backoff) and become
+searchable as they come online. `MCPServer` therefore exposes async readiness and
+a state (connecting / ready / faulted); a faulted *registered* server is simply
+absent from search until it recovers, rather than failing the whole session.
 
 ## Uniform entry point: one `MCPToolProvider` protocol
 
@@ -318,14 +326,14 @@ public protocol MCPToolProvider {
 
 - `MCPTool` → `[self]` (one tool).
 - `MCPServer` → awaits readiness, returns its tools as `[MCPTool]`.
-- `MCPToolRegistry` → its alwaysLoad tools **plus** the generic `MCPSearchTool` /
-  `MCPCallTool` / `MCPElicitationTool`.
+- `MCPToolRegistry` → just the generic `MCPSearchTool` / `MCPCallTool` /
+  `MCPElicitationTool` (the searchable layer).
 - `[any MCPToolProvider]` → flattens (compose servers + loose tools + a registry).
 
 So every shape is **addable to a session the same way**, and `sessionTools()` is
-the single **async boundary** where discovery happens — alwaysLoad blocks here;
-deferred tools arrive later via the registry's search/call tools. A convenience
-wraps it:
+the single **async boundary** where discovery happens — directly-placed providers
+block here (their tools must be in the array); registered tools arrive later via
+the registry's search/call tools. A convenience wraps it:
 
 ```swift
 let session = try await LanguageModelSession(mcp: registry, instructions: …)
@@ -365,8 +373,10 @@ logic of its own; the registry holds metadata and powers search/UI. `MCPTool`,
    an `MCPTool` and **vends `[any Tool]`** for direct session use, the registry,
    or the search/call tools. Declares the **elicitation** client capability and
    routes server `elicitation/create` requests to the host `ElicitationCoordinator`.
-   Optional tool-list refresh (`tools/list_changed`); does not reimplement
-   connection/reconnect — that's the SDK's job.
+   **Owns auto-reconnect with retry + exponential backoff** (using the SDK's
+   transport reconnect where available, wrapping it where not) plus tool-list
+   refresh (`tools/list_changed`) — connection *resilience* is the server's job,
+   the *wire protocol* stays the SDK's.
 
 2. **`MCPTool`** ⭐ — the generic adapter conforming to `FoundationModels.Tool`.
    Holds the `MCP.Client`, the source `MCP.Tool` (name/description), and the
@@ -390,11 +400,11 @@ logic of its own; the registry holds metadata and powers search/UI. `MCPTool`,
    `structuredContent` is a renderer decision; record it either way.)
 
 6. **`MCPToolRegistry`** ⭐ — assembled via **`MCPToolRegistry.Builder`** (servers
-   + per-tool load modes + search-agent config + elicitation coordinator; async
-   `build()`). Holds one or more `MCPServer`s and the load mode
-   (alwaysLoad / deferred / hidden) of each tool. Vends the session's initial
-   `tools:` set (alwaysLoad tools + the search/call tools), answers searches over
-   non-hidden tools, builds the custom segment to surface a tool on demand, and
+   + search-agent config + elicitation coordinator; async `build()`). The
+   **searchable layer**: holds one or more `MCPServer`s, vends the session's
+   generic `MCPSearchTool` / `MCPCallTool` / `MCPElicitationTool` (not a fixed
+   tool array — directly-placed tools are composed alongside it), answers searches
+   over its tools, builds the custom segment to surface a tool on demand, and
    **exposes the full catalog as plain data (server, tool name, description,
    parameters/schema) for host UIs** — values only, no UI logic. **Refreshes** on
    reconnect / `tools/list_changed` so search and call stay current **without
@@ -481,8 +491,8 @@ what was dropped** rather than silently misrepresenting the schema.
   `LanguageModelSession`, and runs a prompt that triggers a tool call. Doubles as
   the human-facing E2E.
 - [ ] **M7 — Registry + generic tools.** `MCPToolRegistry` (built via
-  `MCPToolRegistry.Builder`) over one+ `MCPServer`s with per-tool load modes and a
-  public catalog (server/tool/description/parameters) for host UIs; the
+  `MCPToolRegistry.Builder`) over one+ `MCPServer`s (all registered/searchable; no
+  load modes) and a public catalog (server/tool/description/parameters) for host UIs; the
   `MCPToolProvider` conformances + `LanguageModelSession(mcp:)` convenience;
   generic `MCPCallTool` (constrained `{ server, tool, arguments }`, server/tool as
   `anyOf` → SDK `callTool`). The direct-add path stays unchanged.
@@ -520,8 +530,12 @@ what was dropped** rather than silently misrepresenting the schema.
   `MCPServer`s in the registry / search / call. `MCPCallTool`'s constraint is
   `{ server, tool, arguments }` (server & tool `anyOf`-constrained; arguments a
   valid-JSON object).
-- **Tool load modes (decided):** `alwaysLoad` / `deferred` / `hidden`, mirroring
-  Claude Code. `hidden` = in the registry, never exposed to the model.
+- **Placement, not load modes (decided):** there is **no `alwaysLoad` / `deferred`
+  / `hidden` enum**. A tool's behavior is its *placement*: **direct** (in the
+  session `tools:` array → always in context = "essential"), **registered** (in an
+  `MCPToolRegistry` → searchable/surfaced on demand), or **neither** (held and
+  invoked from host code = the old "hidden"). The registry is purely the searchable
+  layer; essential tools are composed alongside it (`mcp: [registry, clock]`).
 - **Search is agentic (decided):** `MCPSearchTool` runs an isolated sub-session
   over the registry catalog from a task description — not a lexical match.
 - **Surfacing (decided, pending SDK verification):** surface discovered deferred
@@ -539,15 +553,17 @@ what was dropped** rather than silently misrepresenting the schema.
 - **Resilience (decided):** the **registry path keeps the session warm** across
   late connects / faults / reconnects / `tools/list_changed` (refresh, no
   rebuild); **direct-add is a frozen snapshot** (rebuild to change its tool set).
-  `alwaysLoad` blocks startup until connect, **retrying with exponential backoff**
-  (essential ⇒ retry, not fail-fast; hard-fail only when backoff is exhausted);
-  other servers connect in the background.
+  Directly-placed servers block startup until connect, **retrying with exponential
+  backoff** (essential by virtue of placement ⇒ retry, not fail-fast; hard-fail
+  only when backoff is exhausted); registered servers connect in the background.
+  Every `MCPServer` auto-reconnects with backoff regardless of placement.
 - **Uniform entry point (decided):** `MCPTool` / `MCPServer` / `MCPToolRegistry`
   conform to `MCPToolProvider`; `sessionTools() async throws` is the single
   discovery boundary, and `LanguageModelSession(mcp:)` is the one call site.
 - **Registry built via a builder (decided):** `MCPToolRegistry.Builder` assembles
-  the registry — servers + per-tool load modes, the elicitation coordinator, and
-  **the search agent**. The search agent is a **whole `LanguageModelSession`, not
+  the registry — servers (all registered/searchable; no per-tool modes), the
+  elicitation coordinator, and **the search agent**. The search agent is a **whole
+  `LanguageModelSession`, not
   a lone model** — `searchAgent(_:)` takes a `SearchAgent` config: **enumerated
   defaults** (`.default` + named presets bundling instructions/model/effort/max
   results) **or `.custom`** (host supplies a builder that constructs the unique
@@ -617,23 +633,22 @@ what was dropped** rather than silently misrepresenting the schema.
    mode — the coordinator honors it (consistent with the no-secrets-in-form-mode
    rule).
 9. ✅ **Lifecycle policy — decided.**
-   - **`alwaysLoad` (essential) connect failure → retry with backoff.** An
-     `alwaysLoad` server is *essential*, so a failed/timed-out connect isn't an
-     immediate fail-or-degrade decision: **retry with exponential backoff**
-     (per-attempt connect timeout, bounded total budget / max attempts). The
-     session blocks on these retries during construction. Only if backoff is
-     **exhausted** does it surface a hard failure (it was declared essential).
+   - **Directly-placed (essential) connect failure → retry with backoff.** A
+     directly-placed server is *essential* (that's what placing it directly means),
+     so a failed/timed-out connect isn't an immediate fail-or-degrade decision:
+     **retry with exponential backoff** (per-attempt connect timeout, bounded total
+     budget / max attempts). The session blocks on these retries during
+     construction. Only if backoff is **exhausted** does it surface a hard failure.
      Defaults (per-attempt timeout, backoff base/cap, max attempts) are
-     host-overridable on the Builder.
-   - **Deferred/registry servers** keep connecting in the background (same backoff
-     policy) and become searchable as they come online; their failure never blocks
-     startup.
+     host-overridable on the Builder. Every `MCPServer` auto-reconnects with the
+     same backoff regardless of placement — it's connection hygiene, not a mode.
+   - **Registered servers** keep connecting in the background (same backoff policy)
+     and become searchable as they come online; their failure never blocks startup.
    - **A late connect's effect depends on *where its tools live*** — the rebuild
      trigger is the contribution, not the lateness:
-     - **Directly-loaded tools (alwaysLoad in the fixed `tools:` array)** can't
-       appear in a live session, so a late connect (or reconnect) of such a server
-       **justifies a transcript/session rebuild** — that's exactly why it was
-       essential.
+     - **Directly-placed tools (in the fixed `tools:` array)** can't appear in a
+       live session, so a late connect (or reconnect) of such a server **justifies
+       a transcript/session rebuild** — that's exactly why it was placed directly.
      - **A server feeding the search/registry path** needs **no rebuild**: the
        session already holds the stable `MCPSearchTool`/`MCPCallTool`, so the
        registry just refreshes and there are simply *more tools to discover*.
