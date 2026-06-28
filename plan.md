@@ -205,13 +205,13 @@ ongoing transcript as a custom segment** (a `PromptRepresentable` carrying the
 tool's definition + its `GenerationSchema`), *not* by reconstructing the session.
 The model sees the tool inline, calls it with full constrained decoding, and the
 cache is preserved. **"Add the tool inline where it's needed" = append a segment,
-not rebuild.** (OS 27 **Skills** — just-in-time transcript injection of
-directions/tools, with `allowsDeactivation` to remove them mid-turn — are the
-higher-level form of the same primitive and a candidate surfacing vehicle.)
+not rebuild.** Surfacing is **append-only** — there is no documented mid-session
+*removal*, so surfaced tools accumulate in the transcript over a long session;
+the lever for that is transcript trimming (M5), not a teardown API.
 
 > ⚠️ **The one thing M8 must pin against the compiled SDK:** that a custom
-> segment (or a Skill) can carry a tool definition that becomes *callable with
-> constrained decoding* — not merely descriptive text in context. Strong
+> segment can carry a tool definition that becomes *callable with constrained
+> decoding* — not merely descriptive text in context. Strong
 > evidence exists that custom segments carry content into the transcript cheaply
 > (cache-preserving append); first-party confirmation that this makes a *tool
 > callable* was not found. **Fallback if it doesn't hold:** route the call
@@ -532,28 +532,43 @@ what was dropped** rather than silently misrepresenting the schema.
 
 ### Still open
 
-1. **Module/package name** — e.g. `FoundationModelsMCP` with a single `MCPTools`
-   product (and a separate sample target).
-2. **Min OS / SDK** — the swift-sdk floor (macOS 13 / iOS 16, Swift 6+ /
-   Xcode 16+) is *well below* our target, so **FoundationModels is the sole
-   binding minimum** (OS 26+ where `SystemLanguageModel` exists; we target OS 27).
-   Nothing to reconcile beyond confirming the exact FoundationModels availability
-   annotations and pinning the swift-sdk version.
-3. **Constraint mapping edge cases** — the rich guides are confirmed
-   runtime-expressible (see the ✅ note); the residual unknowns are narrow:
-   numeric `GenerationGuide`s are typed to `Decimal` (handle JSON integer/number
-   → `Decimal` cleanly), count-guide behavior on *nested* arrays, exclusive vs.
-   inclusive bounds, and whether every JSON Schema keyword has a clean guide
-   mapping. Pin these against the compiled SDK.
-4. **Custom-segment / Skill callability** — the M8 crux: confirm a custom
-   segment (or a Skill) makes a tool *callable with constrained decoding*, not
-   just visible as text. If it can't, `MCPCallTool` is the surfacing fallback.
-5. **Surfacing vehicle** — custom segment vs. OS 27 Skill (`allowsDeactivation`):
-   pin which to use, and whether removing a surfaced tool mid-conversation is
-   needed.
-6. **Search tuning** — the sub-session's model/effort, how many tools it returns,
-   whether to auto-surface the top pick or let the parent choose, and catalog
-   size limits for the sub-session's own context.
+1. ✅ **Module name — decided:** one library module **`FoundationModelsMCP`**
+   (`import FoundationModelsMCP`; matches the repo, distinct from the SDK's
+   `import MCP`), plus a separate executable sample target.
+2. ✅ **Min OS — decided: OS 27 only.** The whole package (including
+   custom-segment dynamic surfacing) targets OS 27 unconditionally — no
+   `@available` branching, no OS-26 degrade path. The swift-sdk floor (macOS 13 /
+   iOS 16, Swift 6+) is far below this; pin its latest stable tag at M0.
+3. ✅ **Constraint mapping — decided: full in v1, `pattern` best-effort.** v1 maps
+   `enum`→`anyOf`, `minimum`/`maximum`→`range`, `minItems`/`maxItems`→count as
+   hard guides; **`pattern` is best-effort** — try-compile the JSON Schema
+   (ECMA-262) regex as a Swift `Regex`; on failure, fall back to a logged
+   description hint. Implementation must still pin against the compiled SDK:
+   numeric guides are `Decimal` (clean JSON integer/number → `Decimal`), exclusive
+   vs. inclusive bounds (`exclusiveMinimum` → epsilon/round, documented), and
+   count-guide behavior on nested arrays.
+4. ✅ **Custom-segment surfacing — decided: bet on it (primary path).** v1 makes
+   custom-segment surfacing the *primary* deferred-tool path (per-tool
+   constrained, cache-preserving); `MCPCallTool` remains only as the safety-net
+   fallback. **Because this is load-bearing and still unverified, run it as an
+   early M8 spike** — confirm against the compiled SDK that a custom segment makes
+   a tool callable with constrained decoding *before* building the rest of the
+   registry/search path on it.
+5. ✅ **Surfacing vehicle — decided: custom segment.** "Skills /
+   `allowsDeactivation`" came from an unreliable web snippet and **is not in the
+   FoundationModels docs** — dropped. The vehicle is a custom segment. Tradeoff
+   accepted: surfacing is **append-only (no mid-session removal)**; surfaced
+   tools accrue until trimmed (M5). (Custom segments themselves are still pinned
+   by the M8 spike — item 4.)
+6. ✅ **Search tuning — decided.** Sub-session = `.default` model, `.medium`
+   effort. Returns **ranked top-N picks (default cap 5)** + rationale, not just
+   one. **`MCPSearchTool` is a pure read: it returns picks; the *parent* surfaces
+   them** (appends the custom segment) — search never mutates the transcript, so
+   the one transcript-write stays an explicit, debuggable parent step (no
+   auto-surface). Catalog: full into the sub-session for v1, but **lexical
+   pre-filter + log when it exceeds a token budget** so the sub-session's own
+   context doesn't blow up. (model/effort/maxResults are `Builder.searchAgent(…)`
+   config.)
 7. **Cross-field constraint in `MCPCallTool`** — can `tool` be constrained to the
    chosen `server`'s tools (a dependent `anyOf`), or only to the global union of
    tool names? If dependent enums aren't expressible at runtime, validate the
