@@ -5,9 +5,10 @@ call tools served by any **Model Context Protocol (MCP)** server. It bridges the
 official [`modelcontextprotocol/swift-sdk`](https://github.com/modelcontextprotocol/swift-sdk)
 (the MCP client) to the FoundationModels `Tool` protocol.
 
-> Target: WWDC26 / OS 27+ (and later). FoundationModels first shipped in OS 26;
-> this package targets the newest OS where the framework and its dynamic-schema
-> APIs are stable.
+> Target: **OS 27+ only** (macOS 27 / iOS 27 and later). No back-deployment to OS
+> 26, **no `@available` branching, no degrade path** — the framework and its
+> dynamic-schema APIs are assumed stable at the OS 27 floor, so compatibility code
+> is omitted by design. (See Decisions → Min OS.)
 
 ## Design principle: thin bridge, not a reimplementation
 
@@ -113,50 +114,66 @@ they happen:
 Constrained generation is a **hard requirement**, and the bridge is
 **provider-agnostic above the `LanguageModelSession` line** — `MCPTool`,
 `MCPServer`, `SchemaConverter`, the registry, search, and elicitation are written
-once against the FoundationModels API and run unchanged on either backend. Only the
-**model under the session, and the engine that enforces the constraint, differ** —
-and we **accept two different paths below the API line** rather than forcing one
-mechanism.
-
-**Why it can't be one engine.** xgrammar enforces a grammar by **masking the model's
-logits at every decode step**, which needs access to the decode loop. Apple's
-`SystemLanguageModel` exposes neither its logits nor its loop, so **xgrammar cannot
-attach to it** — that's architectural, not a missing integration. The constraint
-engine is therefore a property of the backend:
+once against the FoundationModels API. Below that line there are **two backends with
+two constraint engines**, and we **accept two different paths** rather than forcing
+one mechanism.
 
 | | **Built-in backend** | **MLX backend** |
 |---|---|---|
-| Model | Apple `SystemLanguageModel` (on-device, no download) | open-weight via `MLXLanguageModel` (weights shipped/downloaded) |
-| Constraint engine | Apple's **built-in guided generation** (closed) | **vendored xgrammar** logit masking — *we own the loop* |
-| Guarantee | whatever Apple enforces; **must be verified** (token-level vs. advisory) — Still open #3 | a **testable property of code we control** — retires #3/#4 |
-| Schema → constraint | `MCP.Value` → `GenerationSchema` → Apple's decoder | same `GenerationSchema` → JSON Schema → `GrammarConstraint(jsonSchema:)`; **may compile the raw MCP `inputSchema` directly** for higher fidelity |
-| Extra deps | none beyond FoundationModels + MCP SDK | `+ MLXFoundationModels`, `MLXGuidedGeneration` (vendored xgrammar) |
+| Provider | Apple `SystemLanguageModel`, used **directly** (no Router) | **FoundationModelsRouter** (sibling pkg) — RAM-aware model selection over MLX |
+| Model | Apple on-device model (no download) | open-weight, chosen by Router per machine |
+| Constraint engine | Apple's **built-in guided generation** (closed) | **xgrammar**, owned by Router's `MLXGuidedGeneration` — *we don't vendor it, we call Router* |
+| Guarantee | whatever Apple enforces; **must be verified** (token-level vs. advisory) — Still open #3 | logit masking, testable through Router; full raw-schema fidelity |
+| MCP `inputSchema` → constraint | `MCP.Value` → `GenerationSchema` → Apple's decoder (lossy mapping is the ceiling) | **raw `inputSchema` string → Router `Grammar.jsonSchema` → xgrammar** — no `GenerationSchema` round-trip |
+| Tool-call loop | the `LanguageModelSession` owns it | depends on path (below) |
 
-**The shared line is the FoundationModels API.** `MLXLanguageModel` (from
-[`swissarmyhammer/mlx-swift-lm@mlx-foundationmodels`](https://github.com/swissarmyhammer/mlx-swift-lm/tree/mlx-foundationmodels))
-is a drop-in for `SystemLanguageModel` in `LanguageModelSession`, with tool calling +
-guided generation. The `Tool` protocol still requires `parameters: GenerationSchema`,
-so **`SchemaConverter` (MCP → `GenerationSchema`) is shared and unchanged**; the
-engines diverge strictly *below* it — the built-in model hands `GenerationSchema` to
-Apple's opaque decoder, the MLX path runs it (or the raw MCP JSON Schema) through
-xgrammar's per-step mask via `GrammarConstraint` / `GuidedGenerationLoop` (with the
-JSON-friendly `ClosingTokenBias` / `WhitespaceTokenBias` / `CompletionReserve`
-processors that product already ships).
+**Why it can't be one engine.** xgrammar enforces a grammar by **masking the model's
+logits every decode step**, which needs the decode loop. Apple's `SystemLanguageModel`
+exposes neither its logits nor its loop, so **xgrammar cannot attach to it** — that's
+architectural. The built-in backend therefore gets *only* Apple's guided generation;
+the MLX backend gets xgrammar, through Router.
 
-**Fidelity bonus on MLX.** Our `GenerationSchema` mapping *drops* JSON-Schema features
-(`anyOf`/`oneOf` unions, `additionalProperties`, …) to a permissive fallback (see
-[schema translation](#the-schema-translation-core-risk-plan-it-explicitly)). xgrammar
-consumes those natively, so the MLX path **may bypass the `GenerationSchema`
-round-trip and compile the original MCP `inputSchema` string** — recovering fidelity
-the built-in path structurally can't. (Spike at M10; the built-in fallback table is
-the floor, not the ceiling.)
+### How constrained generation is used, per backend
 
-**Selection is a host choice at session construction.** The host picks the backend
-when it builds the session's model; `LanguageModelSession(mcp:)` is otherwise
-identical. Built-in is the zero-download default where Apple's guided generation is
-sufficient; MLX is the verified-guarantee / full-fidelity path. **Neither is
-privileged in the bridge**, and the two are explicitly allowed to take different code
-paths underneath.
+**Built-in (Apple, direct).** `MCPTool` conforms to `Tool`; `SchemaConverter` turns the
+MCP `inputSchema` into `parameters: GenerationSchema`; the `LanguageModelSession`
+drives Apple's guided generation, which constrains the tool-call arguments. Unchanged
+from the rest of this plan. `SchemaConverter`'s lossy fallback (it drops `anyOf`/
+`oneOf`, `additionalProperties`, …) is the fidelity ceiling here.
+
+**MLX (via FoundationModelsRouter).** Router owns model selection **and** the xgrammar
+engine, so we **depend on FoundationModelsRouter, not on `mlx-swift-lm` directly, and
+we do not vendor xgrammar**. The constraint vehicle is Router's guided generation fed
+the **raw MCP `inputSchema` string** — `Grammar.jsonSchema(tool.inputSchema)` via
+`respond(to:matching:) -> JSONValue`. **This resolves the old "raw-passthrough" spike:
+Router exposes raw-JSON-Schema constraint as a first-class API**, so on MLX the
+constraint skips the `GenerationSchema` round-trip entirely and keeps schema features
+(`anyOf`/`oneOf`, `additionalProperties`, …) the built-in path would drop. We convert
+the returned `JSONValue` → MCP arguments and call `client.callTool`. Caveat: xgrammar
+accepts a **subset of JSON Schema** — `$ref`/`allOf`/`format` must be normalized or are
+rejected with a clear error — so our normalization policy (see schema translation)
+targets *xgrammar's* accepted subset on this path.
+
+**Two ways to drive Router — primary + fallback** (the tool-call loop ownership
+differs, because Router defers the loop to the caller):
+
+- **Path A — `LanguageModelSession` backed by `MLXLanguageModel` (primary).** Router's
+  routed model backs a native `LanguageModelSession` (via `MLXFoundationModels`), so
+  our entire `MCPTool`/`Tool` bridge and the session's **native tool-call
+  orchestration work unchanged** — the model decides which tool to call and the
+  session loops. Keeps the project's spine intact. *Risk:* Router flags this interop as
+  "not load-bearing" for them, and we must confirm its constrained tool-arg decoding
+  actually routes through xgrammar (M10 spike / Still open #10).
+- **Path B — `RoutedSession` + `respond(to:matching:)` (fallback).** If Path A's
+  orchestration or constraint is weak, drop to Router's load-bearing guided-gen API and
+  **`FoundationModelsMCP` owns the tool-call loop**: prompt for a tool choice, constrain
+  args with the raw `inputSchema`, call the tool, feed the result back, repeat. More
+  code, but the constraint path is the clean raw-schema one on Router's hardened
+  surface.
+
+**Selection is a host choice.** The host picks built-in (Apple direct, zero-download) or
+MLX (Router) when it constructs the session's model; `LanguageModelSession(mcp:)` is
+otherwise identical. Neither is privileged in the bridge.
 
 ## Scaling to many tools: registry, search, dynamic surfacing
 
@@ -511,6 +528,14 @@ Unsupported/edge JSON Schema (`anyOf`/`oneOf` unions, `additionalProperties`,
 policy: degrade to a permissive type (e.g. a string the tool parses) and **log
 what was dropped** rather than silently misrepresenting the schema.
 
+**Two targets, two policies** (see Model backends). The **built-in path** degrades to
+`GenerationSchema`'s expressible subset (the table above). The **MLX/Router path feeds
+the raw JSON Schema to xgrammar**, which accepts a *different* — larger but still
+partial — subset: `anyOf`/`oneOf`/`additionalProperties` pass natively, but
+`$ref`/`allOf`/`format` must be **normalized** (inline `$ref`, merge `allOf`,
+drop/translate `format`) or are **rejected with a clear error**. The "log what was
+dropped" rule applies on both; the MLX path simply drops far less.
+
 ## Milestones
 
 - [ ] **M0 — Scaffold.** SwiftPM package; depend on
@@ -559,18 +584,19 @@ what was dropped** rather than silently misrepresenting the schema.
   through the same coordinator. Handle `accept`/`decline`/`cancel`; keep secrets
   out of form mode (URL mode).
 
-- [ ] **M10 — MLX backend (owned constrained generation).** Add the
-  `MLXLanguageModel` provider behind the same `LanguageModelSession` /
-  `MCPToolProvider` surface, depending on `MLXFoundationModels` +
-  `MLXGuidedGeneration` (vendored xgrammar). Feed each tool's schema to
-  `GrammarConstraint(jsonSchema:)` via the executor's `GenerationSchema` → JSON
-  Schema path; **spike whether compiling the raw MCP `inputSchema` directly**
-  (bypassing the `GenerationSchema` round-trip) yields higher fidelity
-  (`anyOf`/`oneOf`/`additionalProperties`). Run the M1 corpus through masked
-  decoding and assert **100% schema-valid args** — the test the built-in backend
-  can't run. Built-in stays the default; this is the verified-guarantee path. Open
-  items: model certification, weight distribution (`MLXDownloadProgress`), and
-  per-step masking cost (see Still open #10).
+- [ ] **M10 — MLX backend on FoundationModelsRouter.** Build the MLX backend on the
+  **FoundationModelsRouter** sibling package (it owns model selection + the
+  `MLXGuidedGeneration`/xgrammar engine); depend on Router, not `mlx-swift-lm`
+  directly. Constrained args come from the **raw MCP `inputSchema`** via Router's
+  `Grammar.jsonSchema` / `respond(to:matching:)` (no `GenerationSchema` round-trip);
+  normalize to xgrammar's accepted JSON-Schema subset (`$ref`/`allOf`/`format`).
+  **Spike Path A vs B:** confirm whether an `MLXLanguageModel`-backed
+  `LanguageModelSession` does native tool orchestration with xgrammar-constrained args
+  (Path A, keeps the bridge); if not, own the loop on `RoutedSession`
+  `respond(to:matching:)` (Path B). Run the M1 corpus through Router's guided
+  generation and assert **100% schema-valid args**. Built-in stays the default; this
+  is the full-fidelity path. (FoundationModelsRouter is itself planning-stage on
+  `mlx-swift-lm@mlx-foundationmodels` / PR #334 — co-developed.)
 
 ## Testing strategy
 
@@ -587,16 +613,18 @@ what was dropped** rather than silently misrepresenting the schema.
 - **Scope (decided):** consume-only for v1 — MCP server tools → usable in a
   `LanguageModelSession` — **plus a sample app** (see M6). The reverse direction
   (expose FoundationModels as an MCP *server*) is explicitly out of scope for v1.
-- **Two model backends, one API (decided):** constrained generation is required, and
-  the bridge is provider-agnostic above `LanguageModelSession`. **Built-in backend** =
-  Apple `SystemLanguageModel` + its built-in guided generation (closed; enforcement
-  must be verified). **MLX backend** = `MLXLanguageModel` + **vendored xgrammar**
-  logit masking (owned, testable; JSON-Schema passthrough for higher fidelity).
-  xgrammar **cannot** attach to the closed system model — it needs the decode loop —
-  so the two backends take **different constrained-decoding paths below the API
-  line**, which is explicitly accepted. `SchemaConverter` and the whole MCP bridge are
-  shared; only the model provider varies. The host chooses the backend at session
-  construction. (See **Model backends**; backend work is M10.)
+- **Two model backends, one API (decided):** constrained generation is required; the
+  bridge is provider-agnostic above `LanguageModelSession`. **Built-in backend** =
+  Apple `SystemLanguageModel` used **directly** + its guided generation (closed;
+  enforcement must be verified). **MLX backend** = built on **FoundationModelsRouter**
+  (sibling package), which owns RAM-aware model selection and the **xgrammar** engine
+  (`MLXGuidedGeneration`) — we **depend on Router, not vendor xgrammar**. xgrammar
+  needs the decode loop, so it **cannot** attach to the closed system model; the two
+  backends take **different constrained-decoding paths**, explicitly accepted. The MLX
+  constraint vehicle is the **raw MCP `inputSchema` → Router `Grammar.jsonSchema` /
+  `respond(to:matching:)`** (no `GenerationSchema` round-trip). `SchemaConverter` and
+  the whole bridge are shared; the host chooses the backend at session construction.
+  (See **Model backends**; backend work is M10.)
 - **Transports (decided):** ship **stdio + HTTP** from the start
   (`StdioTransport` for local subprocess servers, `HTTPClientTransport` for
   remote/SSE), since swift-sdk provides both cheaply.
@@ -738,14 +766,18 @@ what was dropped** rather than silently misrepresenting the schema.
      not auto-rebuild** (that would bust the cache invisibly). Hosts wanting live
      tool-set changes use the registry path.
 
-10. ⏳ **MLX backend specifics — open (pinned at M10).** Which open-weight model(s)
-    we certify for tool calling + guided generation; how weights are distributed
-    (`MLXDownloadProgress` exists); per-step **masking cost** on large vocabularies
-    (xgrammar precomputes masks and the product ships `ClosingTokenBias` /
-    `WhitespaceTokenBias` / `CompletionReserve` to keep JSON output fast and
-    well-formed, but measure it); and whether to compile the **raw MCP `inputSchema`**
-    directly vs. the `GenerationSchema` round-trip (fidelity vs. one shared converter).
-    xgrammar attaching to the system model is **not** open — it's ruled out (no logit
+10. ⏳ **MLX backend specifics — open (pinned at M10).** **Resolved:** the MLX
+    constraint vehicle is the **raw MCP `inputSchema`** via Router's
+    `Grammar.jsonSchema` / `respond(to:matching:)` — no `GenerationSchema` round-trip
+    (Router exposes raw-schema constraint first-class). Model selection, masking cost,
+    and weight distribution are **Router's** concern, not ours. **Still open:** (a)
+    **Path A vs B** — does an `MLXLanguageModel`-backed `LanguageModelSession` do native
+    tool orchestration with xgrammar-constrained args (keep the bridge, Path A), or must
+    `FoundationModelsMCP` own the loop on `RoutedSession` (Path B)? Router calls the
+    `LanguageModelSession` interop "not load-bearing," so this is the M10 spike. (b)
+    **normalizing MCP schemas to xgrammar's accepted subset** — `$ref`/`allOf`/`format`
+    are rejected, so inline/merge/translate-or-error before handing the schema to
+    Router. xgrammar attaching to the closed system model is ruled out (no logit
     access); these are MLX-only.
 
 ## Prior art
@@ -775,8 +807,10 @@ learn from it, not adopt it.
 ## References
 
 - MCP Swift SDK — https://github.com/modelcontextprotocol/swift-sdk
-- MLX + vendored xgrammar FoundationModels backend (`MLXFoundationModels`,
-  `MLXGuidedGeneration`) — https://github.com/swissarmyhammer/mlx-swift-lm/tree/mlx-foundationmodels
+- FoundationModelsRouter (sibling pkg — the MLX backend provider; owns RAM-aware model
+  selection + the xgrammar engine) — ../FoundationModelsRouter
+- MLX + xgrammar stack it builds on (`MLXFoundationModels`, `MLXGuidedGeneration`) —
+  https://github.com/swissarmyhammer/mlx-swift-lm/tree/mlx-foundationmodels (PR #334)
 - FoundationModels `Tool` protocol — https://blakecrosley.com/blog/foundation-models-on-device-llm
 - Dynamic schemas in FoundationModels — https://justin.searls.co/posts/how-to-generate-dynamic-data-structures-with-apple-foundation-models/
 - `@Generable` / `@Guide` & constrained decoding — https://developer.apple.com/videos/play/wwdc2025/301/
