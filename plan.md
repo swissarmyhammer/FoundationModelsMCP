@@ -66,11 +66,13 @@ no per-tool Swift types.
 ## Why this is better than naive tool calling: guaranteed-valid arguments
 
 An MCP tool call is, fundamentally, "produce a JSON object that conforms to the
-tool's `inputSchema`." FoundationModels has **constrained decoding** built in:
-when the model emits a tool call, it is forced *at the token level* to produce
-arguments that match that tool's `parameters: GenerationSchema`. Strict-mode
-constrained decoding gives a formal guarantee — **100% schema-valid tool-call
-arguments whenever a call is produced**.
+tool's `inputSchema`." the FoundationModels API enforces **constrained decoding** at the tool-call
+boundary: when the model emits a tool call, it is forced *at the token level* to
+produce arguments that match that tool's `parameters: GenerationSchema` — a formal
+guarantee, **100% schema-valid tool-call arguments whenever a call is produced**.
+*Which engine* delivers that guarantee depends on the model backend — Apple's
+built-in guided generation, or vendored xgrammar on the MLX backend (see **Model
+backends**, next section). The bridge code below is identical for both.
 
 This reframes what `SchemaConverter` is for. It is not merely *describing* the
 expected shape to the model — it is **wiring the constraint that guarantees the
@@ -105,6 +107,56 @@ they happen:
 > whether every JSON Schema keyword maps cleanly. Anything that genuinely can't
 > map still degrades to a logged description hint, per the fallback policy.
 > *(Confirmed against Apple docs, not yet against a compiled SDK.)*
+
+## Model backends: two engines, one API
+
+Constrained generation is a **hard requirement**, and the bridge is
+**provider-agnostic above the `LanguageModelSession` line** — `MCPTool`,
+`MCPServer`, `SchemaConverter`, the registry, search, and elicitation are written
+once against the FoundationModels API and run unchanged on either backend. Only the
+**model under the session, and the engine that enforces the constraint, differ** —
+and we **accept two different paths below the API line** rather than forcing one
+mechanism.
+
+**Why it can't be one engine.** xgrammar enforces a grammar by **masking the model's
+logits at every decode step**, which needs access to the decode loop. Apple's
+`SystemLanguageModel` exposes neither its logits nor its loop, so **xgrammar cannot
+attach to it** — that's architectural, not a missing integration. The constraint
+engine is therefore a property of the backend:
+
+| | **Built-in backend** | **MLX backend** |
+|---|---|---|
+| Model | Apple `SystemLanguageModel` (on-device, no download) | open-weight via `MLXLanguageModel` (weights shipped/downloaded) |
+| Constraint engine | Apple's **built-in guided generation** (closed) | **vendored xgrammar** logit masking — *we own the loop* |
+| Guarantee | whatever Apple enforces; **must be verified** (token-level vs. advisory) — Still open #3 | a **testable property of code we control** — retires #3/#4 |
+| Schema → constraint | `MCP.Value` → `GenerationSchema` → Apple's decoder | same `GenerationSchema` → JSON Schema → `GrammarConstraint(jsonSchema:)`; **may compile the raw MCP `inputSchema` directly** for higher fidelity |
+| Extra deps | none beyond FoundationModels + MCP SDK | `+ MLXFoundationModels`, `MLXGuidedGeneration` (vendored xgrammar) |
+
+**The shared line is the FoundationModels API.** `MLXLanguageModel` (from
+[`swissarmyhammer/mlx-swift-lm@mlx-foundationmodels`](https://github.com/swissarmyhammer/mlx-swift-lm/tree/mlx-foundationmodels))
+is a drop-in for `SystemLanguageModel` in `LanguageModelSession`, with tool calling +
+guided generation. The `Tool` protocol still requires `parameters: GenerationSchema`,
+so **`SchemaConverter` (MCP → `GenerationSchema`) is shared and unchanged**; the
+engines diverge strictly *below* it — the built-in model hands `GenerationSchema` to
+Apple's opaque decoder, the MLX path runs it (or the raw MCP JSON Schema) through
+xgrammar's per-step mask via `GrammarConstraint` / `GuidedGenerationLoop` (with the
+JSON-friendly `ClosingTokenBias` / `WhitespaceTokenBias` / `CompletionReserve`
+processors that product already ships).
+
+**Fidelity bonus on MLX.** Our `GenerationSchema` mapping *drops* JSON-Schema features
+(`anyOf`/`oneOf` unions, `additionalProperties`, …) to a permissive fallback (see
+[schema translation](#the-schema-translation-core-risk-plan-it-explicitly)). xgrammar
+consumes those natively, so the MLX path **may bypass the `GenerationSchema`
+round-trip and compile the original MCP `inputSchema` string** — recovering fidelity
+the built-in path structurally can't. (Spike at M10; the built-in fallback table is
+the floor, not the ceiling.)
+
+**Selection is a host choice at session construction.** The host picks the backend
+when it builds the session's model; `LanguageModelSession(mcp:)` is otherwise
+identical. Built-in is the zero-download default where Apple's guided generation is
+sufficient; MLX is the verified-guarantee / full-fidelity path. **Neither is
+privileged in the bridge**, and the two are explicitly allowed to take different code
+paths underneath.
 
 ## Scaling to many tools: registry, search, dynamic surfacing
 
@@ -507,6 +559,19 @@ what was dropped** rather than silently misrepresenting the schema.
   through the same coordinator. Handle `accept`/`decline`/`cancel`; keep secrets
   out of form mode (URL mode).
 
+- [ ] **M10 — MLX backend (owned constrained generation).** Add the
+  `MLXLanguageModel` provider behind the same `LanguageModelSession` /
+  `MCPToolProvider` surface, depending on `MLXFoundationModels` +
+  `MLXGuidedGeneration` (vendored xgrammar). Feed each tool's schema to
+  `GrammarConstraint(jsonSchema:)` via the executor's `GenerationSchema` → JSON
+  Schema path; **spike whether compiling the raw MCP `inputSchema` directly**
+  (bypassing the `GenerationSchema` round-trip) yields higher fidelity
+  (`anyOf`/`oneOf`/`additionalProperties`). Run the M1 corpus through masked
+  decoding and assert **100% schema-valid args** — the test the built-in backend
+  can't run. Built-in stays the default; this is the verified-guarantee path. Open
+  items: model certification, weight distribution (`MLXDownloadProgress`), and
+  per-step masking cost (see Still open #10).
+
 ## Testing strategy
 
 - **Schema translation**: table-driven unit tests over a JSON-Schema corpus
@@ -522,6 +587,16 @@ what was dropped** rather than silently misrepresenting the schema.
 - **Scope (decided):** consume-only for v1 — MCP server tools → usable in a
   `LanguageModelSession` — **plus a sample app** (see M6). The reverse direction
   (expose FoundationModels as an MCP *server*) is explicitly out of scope for v1.
+- **Two model backends, one API (decided):** constrained generation is required, and
+  the bridge is provider-agnostic above `LanguageModelSession`. **Built-in backend** =
+  Apple `SystemLanguageModel` + its built-in guided generation (closed; enforcement
+  must be verified). **MLX backend** = `MLXLanguageModel` + **vendored xgrammar**
+  logit masking (owned, testable; JSON-Schema passthrough for higher fidelity).
+  xgrammar **cannot** attach to the closed system model — it needs the decode loop —
+  so the two backends take **different constrained-decoding paths below the API
+  line**, which is explicitly accepted. `SchemaConverter` and the whole MCP bridge are
+  shared; only the model provider varies. The host chooses the backend at session
+  construction. (See **Model backends**; backend work is M10.)
 - **Transports (decided):** ship **stdio + HTTP** from the start
   (`StdioTransport` for local subprocess servers, `HTTPClientTransport` for
   remote/SSE), since swift-sdk provides both cheaply.
@@ -586,7 +661,12 @@ what was dropped** rather than silently misrepresenting the schema.
    description hint. Implementation must still pin against the compiled SDK:
    numeric guides are `Decimal` (clean JSON integer/number → `Decimal`), exclusive
    vs. inclusive bounds (`exclusiveMinimum` → epsilon/round, documented), and
-   count-guide behavior on nested arrays.
+   count-guide behavior on nested arrays. **Scope:** this is a *built-in-backend*
+   risk — its enforcement lives inside Apple's closed decoder. The **MLX backend
+   compiles the schema with vendored xgrammar in a loop we own**, so it is
+   directly unit-testable (and may bypass the mapping entirely by compiling the raw
+   MCP JSON Schema). The MLX path is therefore the independent check on this
+   mapping, not a second copy of the risk.
 4. ✅ **Custom-segment surfacing — decided: bet on it (primary path).** v1 makes
    custom-segment surfacing the *primary* deferred-tool path (per-tool
    constrained, cache-preserving); `MCPCallTool` remains only as the safety-net
@@ -658,6 +738,16 @@ what was dropped** rather than silently misrepresenting the schema.
      not auto-rebuild** (that would bust the cache invisibly). Hosts wanting live
      tool-set changes use the registry path.
 
+10. ⏳ **MLX backend specifics — open (pinned at M10).** Which open-weight model(s)
+    we certify for tool calling + guided generation; how weights are distributed
+    (`MLXDownloadProgress` exists); per-step **masking cost** on large vocabularies
+    (xgrammar precomputes masks and the product ships `ClosingTokenBias` /
+    `WhitespaceTokenBias` / `CompletionReserve` to keep JSON output fast and
+    well-formed, but measure it); and whether to compile the **raw MCP `inputSchema`**
+    directly vs. the `GenerationSchema` round-trip (fidelity vs. one shared converter).
+    xgrammar attaching to the system model is **not** open — it's ruled out (no logit
+    access); these are MLX-only.
+
 ## Prior art
 
 We are building our own. This section records what already exists so we can
@@ -685,6 +775,8 @@ learn from it, not adopt it.
 ## References
 
 - MCP Swift SDK — https://github.com/modelcontextprotocol/swift-sdk
+- MLX + vendored xgrammar FoundationModels backend (`MLXFoundationModels`,
+  `MLXGuidedGeneration`) — https://github.com/swissarmyhammer/mlx-swift-lm/tree/mlx-foundationmodels
 - FoundationModels `Tool` protocol — https://blakecrosley.com/blog/foundation-models-on-device-llm
 - Dynamic schemas in FoundationModels — https://justin.searls.co/posts/how-to-generate-dynamic-data-structures-with-apple-foundation-models/
 - `@Generable` / `@Guide` & constrained decoding — https://developer.apple.com/videos/play/wwdc2025/301/
