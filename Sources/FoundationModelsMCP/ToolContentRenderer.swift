@@ -4,6 +4,7 @@ import MCP
 /// Renders a `tools/call` result — `Tool.Content` items, `isError`, and an
 /// optional `structuredContent` — into the `String` a `FoundationModels.Tool`
 /// adapter (see `MCPTool`) hands back as its `call(arguments:)` `Output`.
+///
 /// `String` already conforms to `PromptRepresentable`, so no bespoke output
 /// type is needed to satisfy `Tool`'s associated type.
 ///
@@ -65,8 +66,9 @@ public enum ToolContentRenderer {
 
     // MARK: - Content
 
-    /// Renders one `Tool.Content` item. See ``render(_:outputSchema:)`` for
-    /// the documented per-case format.
+    /// Renders one `Tool.Content` item.
+    ///
+    /// See ``render(_:outputSchema:)`` for the documented per-case format.
     private static func render(content: Tool.Content) -> String {
         switch content {
         case .text(let text, _, _):
@@ -82,9 +84,10 @@ public enum ToolContentRenderer {
         }
     }
 
-    /// Renders an embedded resource (`EmbeddedResource`). Text resources are
-    /// rendered in full; binary resources (only a `blob`) are described, not
-    /// decoded — see ``render(_:outputSchema:)``.
+    /// Renders an embedded resource (`EmbeddedResource`).
+    ///
+    /// Text resources are rendered in full; binary resources (only a
+    /// `blob`) are described, not decoded — see ``render(_:outputSchema:)``.
     private static func renderResource(_ resource: Resource.Content) -> String {
         if let text = resource.text {
             return "[resource: \(resource.uri)]\n\(text)"
@@ -93,8 +96,9 @@ public enum ToolContentRenderer {
         return "[resource: \(resource.uri) (\(mimeType))]"
     }
 
-    /// Renders a `.resourceLink` from its own declared fields only. Never
-    /// fetches `uri` — see ``render(_:outputSchema:)``.
+    /// Renders a `.resourceLink` from its own declared fields only.
+    ///
+    /// Never fetches `uri` — see ``render(_:outputSchema:)``.
     private static func renderResourceLink(
         uri: String, name: String, title: String?, mimeType: String?
     ) -> String {
@@ -111,8 +115,10 @@ public enum ToolContentRenderer {
     /// result:"` header, then — when `outputSchema` is supplied —
     /// validates it against the **pinned shallow-validation subset**
     /// documented on ``validate(_:against:)`` and appends any failures as a
-    /// `"Note:"` list. A validation failure never hides `structuredContent`;
-    /// it is always appended alongside the content it describes.
+    /// `"Note:"` list.
+    ///
+    /// A validation failure never hides `structuredContent`; it is always
+    /// appended alongside the content it describes.
     private static func renderStructuredContent(_ value: Value, outputSchema: Value?) -> String {
         var lines = ["Structured result:", jsonString(for: value)]
 
@@ -141,8 +147,9 @@ public enum ToolContentRenderer {
     }
 
     /// Validates `value` against `schema` using a **pinned shallow subset**
-    /// of JSON Schema — this is *not* a full JSON Schema validator. Exactly
-    /// four checks are performed:
+    /// of JSON Schema — this is *not* a full JSON Schema validator.
+    ///
+    /// Exactly four checks are performed:
     ///
     /// 1. **Top-level `type`**: if `schema.type` is present, it must match
     ///    `value`'s JSON type (`"object"`/`"array"`/`"string"`/`"integer"`/
@@ -225,10 +232,12 @@ public enum ToolContentRenderer {
     }
 
     /// Whether `value`'s JSON type matches the JSON Schema primitive `type`
-    /// keyword string `typeName`. An `.int` value satisfies both
-    /// `"integer"` and `"number"`; a `.double` value only satisfies
-    /// `"number"`. An unrecognized `typeName` is outside the validated
-    /// subset and is treated as satisfied (never a failure).
+    /// keyword string `typeName`.
+    ///
+    /// An `.int` value satisfies both `"integer"` and `"number"`; a
+    /// `.double` value only satisfies `"number"`. An unrecognized
+    /// `typeName` is outside the validated subset and is treated as
+    /// satisfied (never a failure).
     private static func matchesType(_ typeName: String, value: Value) -> Bool {
         switch typeName {
         case "object":
@@ -267,23 +276,38 @@ public enum ToolContentRenderer {
 
     /// The JSON Schema primitive type name for `value`'s case, used to
     /// report a ``matchesType(_:value:)`` mismatch.
+    ///
+    /// Looked up from ``jsonTypeTable`` instead of a switch, since every
+    /// case differs only in the constant type-name string it maps to.
     private static func jsonType(of value: Value) -> String {
-        switch value {
-        case .null: return "null"
-        case .bool: return "boolean"
-        case .int: return "integer"
-        case .double: return "number"
-        case .string: return "string"
-        case .data: return "string"
-        case .array: return "array"
-        case .object: return "object"
+        guard let entry = jsonTypeTable.first(where: { $0.matches(value) }) else {
+            preconditionFailure("Value case not covered by jsonTypeTable")
         }
+        return entry.name
     }
 
+    /// `Value` case → JSON Schema primitive type name, checked in order
+    /// using the case-testing accessors `Value` already exposes (`isNull`,
+    /// `boolValue`, `intValue`, etc.) instead of pattern-matching again.
+    ///
+    /// `.data` decodes from a JSON string (a data URL), so it is reported
+    /// as `"string"` — see ``matchesType(_:value:)`` for why that matters.
+    private static let jsonTypeTable: [(matches: @Sendable (Value) -> Bool, name: String)] = [
+        ({ $0.isNull }, "null"),
+        ({ $0.boolValue != nil }, "boolean"),
+        ({ $0.intValue != nil }, "integer"),
+        ({ $0.doubleValue != nil }, "number"),
+        ({ $0.stringValue != nil }, "string"),
+        ({ $0.dataValue != nil }, "string"),
+        ({ $0.arrayValue != nil }, "array"),
+        ({ $0.objectValue != nil }, "object"),
+    ]
+
     /// Renders any scalar `Value` (string/int/double/bool) to its string
-    /// form, for `enum` membership comparison. Non-scalar values (array/
-    /// object/null/data) have no defined enum representation and return
-    /// `nil`.
+    /// form, for `enum` membership comparison.
+    ///
+    /// Non-scalar values (array/object/null/data) have no defined enum
+    /// representation and return `nil`.
     private static func scalarString(_ value: Value) -> String? {
         switch value {
         case .string(let string): return string
