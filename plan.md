@@ -362,6 +362,45 @@ also exposed verbatim** (see Models & enforcement), so an external driver that
 compiles it directly — e.g. FoundationModelsMultitool via xgrammar — is not
 limited by this table.
 
+## Examples
+
+Examples are **explicit, runnable deliverables** — each a small executable
+target under `Examples/` (`swift run <Name>`), kept compiling in CI. Together
+they are the living documentation of every capability in this plan:
+
+1. **`EchoTool`** — the ~20-line hello world. Spawns a stdio echo server
+   (`StdioTransport`), wraps it in `MCPServer`, builds
+   `LanguageModelSession(mcp: echo)` on the system model, and runs one prompt
+   that triggers one tool call. Proves the bridge end-to-end.
+2. **`FileAssistant`** — a real multi-tool server (stdio filesystem).
+   Direct-adds the whole server, then drives natural prompts ("what's in
+   config.yaml?") so the model picks among several tools. Also demonstrates
+   error bubbling: a prompt about a missing file produces an `isError` result
+   the model recovers from in-session.
+3. **`MLXConstrained`** — `FileAssistant`, but the session is backed by
+   `MLXLanguageModel` (the mandatory `mlx-swift-lm` path). Demonstrates that
+   the bridge code is unchanged while argument generation is
+   xgrammar-constrained; runs a prompt batch and checks every emitted argument
+   object against the tool's raw `inputSchema`.
+4. **`ToolPicking`** — provider composition: one loose `MCPTool` (a single
+   (server, tool) pair) plus a native Swift `Tool` in the same session
+   (`LanguageModelSession(mcp: clockTool, readFileTool)`), showing
+   `MCPToolProvider` flattening and that MCP and native tools coexist.
+5. **`RemoteHTTP`** — connects to a remote server over `HTTPClientTransport`
+   with a host-supplied bearer token, demonstrating the authorization decision
+   (auth is the host's; the bridge just uses the authenticated transport).
+6. **`ElicitingAgent`** — both elicitation directions through one console
+   `ElicitationCoordinator`: a server tool that pauses mid-call with
+   `elicitation/create`, and the model calling `MCPElicitationTool` to ask the
+   user a structured question. Shows accept / decline / cancel at the terminal.
+7. **`CatalogBrowser`** — connects one or more servers and prints the full
+   catalog (name, `title`, description, `ToolAnnotations`, icons, raw
+   `inputSchema`, converted `GenerationSchema`) — the exact M8 surface
+   FoundationModelsMultitool consumes; doubles as its integration stub.
+
+Each example doubles as the acceptance demo for its milestone (`EchoTool` ↔ M4,
+`MLXConstrained` ↔ M0/M4, `ElicitingAgent` ↔ M7, `CatalogBrowser` ↔ M8).
+
 ## Milestones
 
 - [ ] **M0 — Scaffold.** SwiftPM package; depend on
@@ -392,17 +431,18 @@ limited by this table.
 - [ ] **M5 — Hardening.** Cancellation (Swift task cancel → protocol
   `notifications/cancelled` so servers don't run orphaned work), per-call
   timeouts (reset by `notifications/progress`, which also surfaces to the host),
-  `isError` mapping, image/audio content handling, structured logging, docs + a
-  sample. **Tool results are the context-window cost** (an MCP result can be
+  `isError` mapping, image/audio content handling, structured logging, docs.
+  **Tool results are the context-window cost** (an MCP result can be
   huge), so `ToolContentRenderer` needs a size/trimming strategy — this is where
   Apple's
   [managing-the-context-window](https://developer.apple.com/documentation/foundationmodels/managing-the-context-window)
   transcript guidance applies (the *output* side, distinct from the
   constrained-decoding win on the *input* side).
-- [ ] **M6 — Sample app.** A small demo target (CLI or app) that connects to a
-  real local MCP server over stdio, registers its tools on a
-  `LanguageModelSession`, and runs a prompt that triggers a tool call. Doubles as
-  the human-facing E2E.
+- [ ] **M6 — Examples.** Build the `Examples/` suite (see **Examples**):
+  `EchoTool`, `FileAssistant`, `MLXConstrained`, `ToolPicking`, `RemoteHTTP`,
+  `ElicitingAgent`, `CatalogBrowser` — each a runnable executable target
+  (`swift run <Name>`), compiled in CI. `EchoTool` and `FileAssistant` double
+  as the human-facing E2E.
 - [ ] **M7 — Elicitation (both directions).** Declare the elicitation client
   capability on `MCPServer` and route server `elicitation/create` → the host
   `ElicitationCoordinator`; add `MCPElicitationTool` so the agent can elicit
@@ -427,7 +467,8 @@ limited by this table.
 ## Decisions
 
 - **Scope (decided):** consume-only for v1 — MCP server tools → usable in a
-  `LanguageModelSession` — **plus a sample app** (see M6). The reverse direction
+  `LanguageModelSession` — **plus the explicit runnable examples** (see
+  **Examples** / M6). The reverse direction
   (expose FoundationModels as an MCP *server*) is explicitly out of scope for v1.
 - **Spec revision (decided):** targets MCP **2025-11-25** (the current revision).
   M0 verifies the pinned swift-sdk actually speaks it (and its elicitation
@@ -495,7 +536,8 @@ limited by this table.
 
 1. ✅ **Module name — decided:** one library module **`FoundationModelsMCP`**
    (`import FoundationModelsMCP`; matches the repo, distinct from the SDK's
-   `import MCP`), plus a separate executable sample target.
+   `import MCP`), plus the executable example targets under `Examples/` (see
+   **Examples**).
 2. ✅ **Min OS — decided: OS 27 only.** The whole package targets OS 27
    unconditionally — no `@available` branching, no OS-26 degrade path. The
    swift-sdk floor (macOS 13 / iOS 16, Swift 6+) is far below this; pin its
