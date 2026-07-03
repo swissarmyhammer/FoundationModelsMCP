@@ -31,6 +31,9 @@ let package = Package(
             dependencies: [
                 "FoundationModelsMCP",
                 .product(name: "MCP", package: "swift-sdk"),
+            ],
+            resources: [
+                .copy("Fixtures")
             ]
         ),
     ]

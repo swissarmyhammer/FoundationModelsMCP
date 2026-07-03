@@ -23,7 +23,7 @@ comments:
 
     Leaving task in `doing` for review per /implement process (not moving to review myself).
   timestamp: 2026-07-03T20:25:42.470209+00:00
-position_column: doing
+position_column: done
 position_ordinal: '80'
 title: 'M0: Scaffold SwiftPM package — swift-sdk + FoundationModels only, CI'
 ---

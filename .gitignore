@@ -2,6 +2,7 @@
 .sah/
 .shell/
 .ralph/
+.validators/
 .claude/settings.local.json
 
 # macOS
