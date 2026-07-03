@@ -191,7 +191,7 @@ public enum SchemaConverter {
         case "array":
             return parseArray(fields, name: name)
         default:
-            if let primitive = typeString.flatMap(primitiveSchemaIR) {
+            if let primitive = typeString.flatMap({ primitiveTypeMap[$0] }) {
                 return primitive
             }
             // No recognized `type`, but shaped like an object (e.g. a root
@@ -211,14 +211,6 @@ public enum SchemaConverter {
         "number": .number,
         "boolean": .boolean,
     ]
-
-    /// Maps a JSON Schema primitive `type` string to its `SchemaIR` case.
-    ///
-    /// - Parameter typeString: The JSON Schema `type` keyword's string value.
-    /// - Returns: The matching primitive `SchemaIR` case, or `nil` if `typeString` is not one of `"string"`, `"integer"`, `"number"`, or `"boolean"`.
-    private static func primitiveSchemaIR(_ typeString: String) -> SchemaIR? {
-        primitiveTypeMap[typeString]
-    }
 
     /// Parses an object node's `properties` and `required` into an ``SchemaIR/object(name:description:properties:)`` case.
     ///
@@ -281,19 +273,11 @@ public enum SchemaConverter {
     private static func scalarString(_ value: Value) -> String? {
         switch value {
         case .string(let string): return string
-        case .int(let int): return numericScalarString(int)
-        case .double(let double): return numericScalarString(double)
-        case .bool(let bool): return numericScalarString(bool)
+        case .int(let int): return String(describing: int)
+        case .double(let double): return String(describing: double)
+        case .bool(let bool): return String(describing: bool)
         default: return nil
         }
-    }
-
-    /// Renders a numeric or boolean `enum` scalar to its default string form.
-    ///
-    /// - Parameter scalar: The numeric or boolean value to stringify.
-    /// - Returns: The value's default string representation.
-    private static func numericScalarString(_ scalar: some CustomStringConvertible) -> String {
-        String(describing: scalar)
     }
 
     /// MCP 2025-11-25 targets JSON Schema 2020-12, whose default `$ref` anchor for a top-level `$defs` entry is `#/$defs/<name>`; the legacy `#/definitions/<name>` form (see `definitionsContainerKeys`) is recognized alongside it.
@@ -348,12 +332,10 @@ public enum SchemaConverter {
             return DynamicGenerationSchema(name: name, description: description, anyOf: values)
         case .reference(let name):
             return DynamicGenerationSchema(referenceTo: name)
-        default:
-            // .string, .integer, .number, .boolean, .unknown — see `primitiveDynamicSchemas`.
-            // Any new SchemaIR case must be given its own arm above or added to
-            // `primitiveDynamicSchemas`; this switch is no longer exhaustive at
-            // compile time, so an unhandled case silently falls back to a String
-            // schema instead of failing to build.
+        case .string, .integer, .number, .boolean, .unknown:
+            // Every primitive case (plus `.unknown`'s permissive fallback) is
+            // precomputed in `primitiveDynamicSchemas`; look it up by equality
+            // rather than repeating `primitiveSchema(_:)` per case.
             return primitiveDynamicSchemas.first(where: { $0.0 == node })?.1 ?? primitiveSchema(String.self)
         }
     }
