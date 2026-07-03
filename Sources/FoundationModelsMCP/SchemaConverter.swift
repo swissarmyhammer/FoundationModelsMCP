@@ -204,18 +204,20 @@ public enum SchemaConverter {
         }
     }
 
+    /// The JSON Schema primitive `type` strings, keyed to their `SchemaIR` case.
+    private static let primitiveTypeMap: [String: SchemaIR] = [
+        "string": .string,
+        "integer": .integer,
+        "number": .number,
+        "boolean": .boolean,
+    ]
+
     /// Maps a JSON Schema primitive `type` string to its `SchemaIR` case.
     ///
     /// - Parameter typeString: The JSON Schema `type` keyword's string value.
     /// - Returns: The matching primitive `SchemaIR` case, or `nil` if `typeString` is not one of `"string"`, `"integer"`, `"number"`, or `"boolean"`.
     private static func primitiveSchemaIR(_ typeString: String) -> SchemaIR? {
-        switch typeString {
-        case "string": return .string
-        case "integer": return .integer
-        case "number": return .number
-        case "boolean": return .boolean
-        default: return nil
-        }
+        primitiveTypeMap[typeString]
     }
 
     /// Parses an object node's `properties` and `required` into an ``SchemaIR/object(name:description:properties:)`` case.
@@ -310,6 +312,17 @@ public enum SchemaConverter {
 
     // MARK: - Emission (SchemaIR → DynamicGenerationSchema)
 
+    /// The primitive `SchemaIR` cases (plus the ``SchemaIR/unknown`` fallback, which also degrades to a permissive string schema), each paired with its precomputed `DynamicGenerationSchema`.
+    ///
+    /// Looked up by equality in ``dynamicSchema(for:)`` instead of switching on each case, since every entry differs only in the `Generable` type passed to ``primitiveSchema(_:)``.
+    private static let primitiveDynamicSchemas: [(SchemaIR, DynamicGenerationSchema)] = [
+        (.string, primitiveSchema(String.self)),
+        (.integer, primitiveSchema(Int.self)),
+        (.number, primitiveSchema(Double.self)),
+        (.boolean, primitiveSchema(Bool.self)),
+        (.unknown, primitiveSchema(String.self)),
+    ]
+
     /// Translates a parsed `SchemaIR` node into its `DynamicGenerationSchema` equivalent.
     ///
     /// - Parameter node: The parsed schema node to translate.
@@ -329,23 +342,19 @@ public enum SchemaConverter {
                     )
                 }
             )
-        case .string:
-            return primitiveSchema(String.self)
-        case .integer:
-            return primitiveSchema(Int.self)
-        case .number:
-            return primitiveSchema(Double.self)
-        case .boolean:
-            return primitiveSchema(Bool.self)
         case .array(let items):
             return DynamicGenerationSchema(arrayOf: dynamicSchema(for: items))
         case .enumeration(let name, let description, let values):
             return DynamicGenerationSchema(name: name, description: description, anyOf: values)
         case .reference(let name):
             return DynamicGenerationSchema(referenceTo: name)
-        case .unknown:
-            // Degrades to a permissive string schema — see `SchemaIR.unknown`.
-            return primitiveSchema(String.self)
+        default:
+            // .string, .integer, .number, .boolean, .unknown — see `primitiveDynamicSchemas`.
+            // Any new SchemaIR case must be given its own arm above or added to
+            // `primitiveDynamicSchemas`; this switch is no longer exhaustive at
+            // compile time, so an unhandled case silently falls back to a String
+            // schema instead of failing to build.
+            return primitiveDynamicSchemas.first(where: { $0.0 == node })?.1 ?? primitiveSchema(String.self)
         }
     }
 
