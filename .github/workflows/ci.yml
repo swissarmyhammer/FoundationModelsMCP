@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    # This package targets macOS 27 / iOS 27 only (see plan.md → Decisions →
+    # Min OS) and imports the system `FoundationModels` framework, which ships
+    # with the OS 27 SDK. GitHub-hosted `macos-*` runners may not yet carry an
+    # Xcode with the OS 27 SDK; if hosted runners fail to resolve it, this job
+    # requires a **self-hosted runner** with Xcode 27 (or later) installed.
+    runs-on: [self-hosted, macOS]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain info
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Build
+        run: swift build
+
+      - name: Test
+        run: swift test
