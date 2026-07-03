@@ -42,13 +42,26 @@ public indirect enum SchemaIR: Sendable, Equatable {
 
     /// One property of an ``object(name:description:properties:)`` node.
     public struct Property: Sendable, Equatable {
+        /// The property's key in the enclosing object's JSON Schema
+        /// `properties` map.
         public var name: String
+        /// The property's JSON Schema `description`, if present.
         public var description: String?
+        /// The parsed schema for this property's value.
         public var schema: SchemaIR
         /// `false` when the property's name is present in the enclosing
         /// object's JSON Schema `required` array.
         public var isOptional: Bool
 
+        /// Creates a property of an ``SchemaIR/object(name:description:properties:)`` node.
+        ///
+        /// - Parameters:
+        ///   - name: The property's key in the enclosing object's JSON Schema
+        ///     `properties` map.
+        ///   - description: The property's JSON Schema `description`, if present.
+        ///   - schema: The parsed schema for this property's value.
+        ///   - isOptional: `false` when the property's name is present in the
+        ///     enclosing object's JSON Schema `required` array.
         public init(name: String, description: String?, schema: SchemaIR, isOptional: Bool) {
             self.name = name
             self.description = description
@@ -65,11 +78,21 @@ public struct SchemaConversion: Sendable, Equatable {
     /// the `DynamicGenerationSchema` / `GenerationSchema` type name at
     /// emission.
     public var name: String
+    /// The parsed root schema — the top-level `inputSchema` node.
     public var root: SchemaIR
     /// Parsed `$defs` entries, keyed by definition name, resolved via
     /// ``SchemaIR/reference(name:)``.
     public var definitions: [String: SchemaIR]
 
+    /// Creates the result of parsing an MCP `inputSchema`.
+    ///
+    /// - Parameters:
+    ///   - name: The name given to the root schema (typically the MCP tool
+    ///     name); also the `DynamicGenerationSchema` / `GenerationSchema` type
+    ///     name at emission.
+    ///   - root: The parsed root schema — the top-level `inputSchema` node.
+    ///   - definitions: Parsed `$defs` entries, keyed by definition name,
+    ///     resolved via ``SchemaIR/reference(name:)``.
     public init(name: String, root: SchemaIR, definitions: [String: SchemaIR]) {
         self.name = name
         self.root = root
