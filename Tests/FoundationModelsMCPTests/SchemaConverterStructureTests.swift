@@ -190,11 +190,11 @@ struct SchemaConverterStructureTests {
         }
 
         let priority = try #require(properties.first { $0.name == "priority" })
-        guard case let .reference(defName) = priority.schema else {
+        guard case let .reference(definitionName) = priority.schema else {
             Issue.record("expected priority to be a .reference")
             return
         }
-        #expect(defName == "Priority")
+        #expect(definitionName == "Priority")
 
         let definition = try #require(conversion.definitions["Priority"])
         guard case let .enumeration(_, definitionDescription, values) = definition else {
@@ -227,11 +227,11 @@ struct SchemaConverterStructureTests {
             return
         }
         let priority = try #require(properties.first { $0.name == "priority" })
-        guard case let .reference(defName) = priority.schema else {
+        guard case let .reference(definitionName) = priority.schema else {
             Issue.record("expected priority to be a .reference")
             return
         }
-        #expect(defName == "Priority")
+        #expect(definitionName == "Priority")
 
         let definition = try #require(conversion.definitions["Priority"])
         guard case let .enumeration(_, _, values) = definition else {

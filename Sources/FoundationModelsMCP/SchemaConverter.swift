@@ -155,9 +155,9 @@ public enum SchemaConverter {
     private static func parseDefinitions(_ fields: [String: Value]) -> [String: SchemaIR] {
         var result: [String: SchemaIR] = [:]
         for containerKey in definitionsContainerKeys {
-            guard case .object(let defs)? = fields[containerKey] else { continue }
-            for (defName, defValue) in defs {
-                result[defName] = parseNode(defValue, name: defName)
+            guard case .object(let definitionFields)? = fields[containerKey] else { continue }
+            for (definitionName, definitionValue) in definitionFields {
+                result[definitionName] = parseNode(definitionValue, name: definitionName)
             }
         }
         return result
@@ -172,8 +172,8 @@ public enum SchemaConverter {
     private static func parseNode(_ value: Value, name: String) -> SchemaIR {
         guard case .object(let fields) = value else { return .unknown }
 
-        if case .string(let ref)? = fields["$ref"], let defName = definitionName(fromRef: ref) {
-            return .reference(name: defName)
+        if case .string(let reference)? = fields["$ref"], let definitionName = definitionName(fromRef: reference) {
+            return .reference(name: definitionName)
         }
 
         if case .array(let enumValues)? = fields["enum"] {
@@ -298,13 +298,13 @@ public enum SchemaConverter {
 
     /// MCP 2025-11-25 targets JSON Schema 2020-12, whose default `$ref` anchor for a top-level `$defs` entry is `#/$defs/<name>`; the legacy `#/definitions/<name>` form (see `definitionsContainerKeys`) is recognized alongside it.
     ///
-    /// - Parameter ref: The raw `$ref` string value from a schema node.
-    /// - Returns: The resolved definition name, or `nil` if `ref` does not match a recognized `$defs`/`definitions` container prefix.
-    private static func definitionName(fromRef ref: String) -> String? {
+    /// - Parameter reference: The raw `$ref` string value from a schema node.
+    /// - Returns: The resolved definition name, or `nil` if `reference` does not match a recognized `$defs`/`definitions` container prefix.
+    private static func definitionName(fromRef reference: String) -> String? {
         for containerKey in definitionsContainerKeys {
             let prefix = "#/\(containerKey)/"
-            if ref.hasPrefix(prefix) {
-                return String(ref.dropFirst(prefix.count))
+            if reference.hasPrefix(prefix) {
+                return String(reference.dropFirst(prefix.count))
             }
         }
         return nil
