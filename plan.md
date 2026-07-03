@@ -67,13 +67,15 @@ no per-tool Swift types.
 ## Why this is better than naive tool calling: guaranteed-valid arguments
 
 An MCP tool call is, fundamentally, "produce a JSON object that conforms to the
-tool's `inputSchema`." the FoundationModels API enforces **constrained decoding** at the tool-call
-boundary: when the model emits a tool call, it is forced *at the token level* to
-produce arguments that match that tool's `parameters: GenerationSchema` — a formal
-guarantee, **100% schema-valid tool-call arguments whenever a call is produced**.
-*Which engine* delivers that guarantee depends on the model backend — Apple's
-built-in guided generation, or vendored xgrammar on the MLX backend (see **Model
-backends**, next section). The bridge code below is identical for both.
+tool's `inputSchema`." The FoundationModels API enforces **constrained decoding**
+at the tool-call boundary: when the model emits a tool call, it is forced *at the
+token level* to produce arguments that match that tool's
+`parameters: GenerationSchema` — a formal guarantee, **100% schema-valid
+tool-call arguments whenever a call is produced**. *Which engine* delivers that
+guarantee depends on the model backing the session — Apple's built-in guided
+generation on `SystemLanguageModel`, or xgrammar under an MLX-backed session
+(see **Models & enforcement**, next section). The bridge code below is identical
+for both.
 
 This reframes what `SchemaConverter` is for. It is not merely *describing* the
 expected shape to the model — it is **wiring the constraint that guarantees the
@@ -109,217 +111,64 @@ they happen:
 > map still degrades to a logged description hint, per the fallback policy.
 > *(Confirmed against Apple docs, not yet against a compiled SDK.)*
 
-## Model backends: two engines, one API
+## Models & enforcement: we declare, the session enforces
 
-Constrained generation is a **hard requirement**, and the bridge is
-**provider-agnostic above the `LanguageModelSession` line** — `MCPTool`,
-`MCPServer`, `SchemaConverter`, the registry, search, and elicitation are written
-once against the FoundationModels API. Below that line there are **two backends with
-two constraint engines**, and we **accept two different paths** rather than forcing
-one mechanism.
+The bridge never drives generation. `MCPTool` **declares** each tool's argument
+shape (`parameters: GenerationSchema`); **enforcing** it while the arguments are
+generated is the job of whatever engine backs the `LanguageModelSession`:
 
-| | **Built-in backend** | **MLX backend** |
-|---|---|---|
-| Provider | Apple `SystemLanguageModel`, used **directly** (no Router) | **FoundationModelsRouter** (sibling pkg) — RAM-aware model selection over MLX |
-| Model | Apple on-device model (no download) | open-weight, chosen by Router per machine |
-| Constraint engine | Apple's **built-in guided generation** (closed) | **xgrammar**, owned by Router's `MLXGuidedGeneration` — *we don't vendor it, we call Router* |
-| Guarantee | whatever Apple enforces; **must be verified** (token-level vs. advisory) — Still open #3 | logit masking, testable through Router; full raw-schema fidelity |
-| MCP `inputSchema` → constraint | `MCP.Value` → `GenerationSchema` → Apple's decoder (lossy mapping is the ceiling) | **raw `inputSchema` string → Router `Grammar.jsonSchema` → xgrammar** — no `GenerationSchema` round-trip |
-| Tool-call loop | the `LanguageModelSession` owns it | depends on path (below) |
+- **Apple `SystemLanguageModel`** — Apple's built-in guided generation (closed;
+  enforcement strength must be verified — Still open #3).
+- **MLX-backed session** — `MLXLanguageModel` from
+  [`swissarmyhammer/mlx-swift-lm`](https://github.com/swissarmyhammer/mlx-swift-lm)
+  (`MLXFoundationModels` + `MLXGuidedGeneration`), a drop-in model for
+  `LanguageModelSession` whose generation is **xgrammar-constrained** (logit
+  masking). **This dependency is mandatory** — the package depends on
+  `mlx-swift-lm` so schema-constrained model support is always available, and it
+  is the enforcement path we can actually inspect and verify (xgrammar cannot
+  attach to the closed system model — no logit access — so the two engines are
+  what they are).
 
-**Why it can't be one engine.** xgrammar enforces a grammar by **masking the model's
-logits every decode step**, which needs the decode loop. Apple's `SystemLanguageModel`
-exposes neither its logits nor its loop, so **xgrammar cannot attach to it** — that's
-architectural. The built-in backend therefore gets *only* Apple's guided generation;
-the MLX backend gets xgrammar, through Router.
+The bridge code is identical over both; the host picks the model at session
+construction. Two consequences:
 
-### How constrained generation is used, per backend
+- **Declaration vs. enforcement.** By the time `MCPTool.call(arguments:)` runs,
+  the args were already generated (and constrained) upstream — the adapter is a
+  pass-through: encode args → `client.callTool` → render the result. No
+  validation or repair layer in the tool; the **MCP server is the real
+  validator**, and its `isError` result bubbles back to the model, which adjusts
+  and retries with full context.
+- **Expose the raw schema.** Alongside the converted `GenerationSchema`,
+  `MCPTool` / `MCPServer` expose the **original MCP `inputSchema` verbatim** as
+  plain data — the integration point for drivers that *do* own generation (e.g.
+  **FoundationModelsMultitool**, constraining calls with xgrammar at full schema
+  fidelity — `anyOf`/`oneOf`/`additionalProperties` — instead of our lossy
+  `GenerationSchema` mapping).
 
-**Built-in (Apple, direct).** `MCPTool` conforms to `Tool`; `SchemaConverter` turns the
-MCP `inputSchema` into `parameters: GenerationSchema`; the `LanguageModelSession`
-drives Apple's guided generation, which constrains the tool-call arguments. Unchanged
-from the rest of this plan. `SchemaConverter`'s lossy fallback (it drops `anyOf`/
-`oneOf`, `additionalProperties`, …) is the fidelity ceiling here.
+## Scaling to many tools: out of scope — see FoundationModelsMultitool
 
-**MLX (via FoundationModelsRouter).** Router owns model selection **and** the xgrammar
-engine, so we **depend on FoundationModelsRouter, not on `mlx-swift-lm` directly, and
-we do not vendor xgrammar**. The constraint vehicle is Router's guided generation fed
-the **raw MCP `inputSchema` string** — `Grammar.jsonSchema(tool.inputSchema)` via
-`respond(to:matching:) -> JSONValue`. **This resolves the old "raw-passthrough" spike:
-Router exposes raw-JSON-Schema constraint as a first-class API**, so on MLX the
-constraint skips the `GenerationSchema` round-trip entirely and keeps schema features
-(`anyOf`/`oneOf`, `additionalProperties`, …) the built-in path would drop. We convert
-the returned `JSONValue` → MCP arguments and call `client.callTool`. Caveat: xgrammar
-accepts a **subset of JSON Schema** — `$ref`/`allOf`/`format` must be normalized or are
-rejected with a clear error — so our normalization policy (see schema translation)
-targets *xgrammar's* accepted subset on this path.
+This package **directly exposes tools**: add an `MCPServer` (all its tools) or
+individual `MCPTool`s to `LanguageModelSession(tools:)`. Every exposed tool's
+schema lands in the session's instructions — right for a curated handful.
 
-**Two ways to drive Router — primary + fallback** (the tool-call loop ownership
-differs, because Router defers the loop to the caller):
+Tool *search* — deferring a large catalog and surfacing tools on demand (the
+Claude Code [MCP tool search](https://code.claude.com/docs/en/mcp#scale-with-mcp-tool-search)
+pattern) — is deliberately **not in this package**. It is an agent-architecture
+concern, and it lives in **`swissarmyhammer/FoundationModelsMultitool`**, which
+builds on this package (it consumes the catalog below) and on
+FoundationModelsRouter for the search model.
 
-- **Path A — `LanguageModelSession` backed by `MLXLanguageModel` (primary).** Router's
-  routed model backs a native `LanguageModelSession` (via `MLXFoundationModels`), so
-  our entire `MCPTool`/`Tool` bridge and the session's **native tool-call
-  orchestration work unchanged** — the model decides which tool to call and the
-  session loops. Keeps the project's spine intact. *Risk:* Router flags this interop as
-  "not load-bearing" for them, and we must confirm its constrained tool-arg decoding
-  actually routes through xgrammar (M10 spike / Still open #10).
-- **Path B — `RoutedSession` + `respond(to:matching:)` (fallback).** If Path A's
-  orchestration or constraint is weak, drop to Router's load-bearing guided-gen API and
-  **`FoundationModelsMCP` owns the tool-call loop**: prompt for a tool choice, constrain
-  args with the raw `inputSchema`, call the tool, feed the result back, repeat. More
-  code, but the constraint path is the clean raw-schema one on Router's hardened
-  surface.
-
-**Selection is a host choice.** The host picks built-in (Apple direct, zero-download) or
-MLX (Router) when it constructs the session's model; `LanguageModelSession(mcp:)` is
-otherwise identical. Neither is privileged in the bridge.
-
-## Scaling to many tools: registry, search, dynamic surfacing
-
-Direct-adding every MCP tool to a session puts *every* tool's schema in the
-instructions — fine for a handful, ruinous for dozens. This is exactly the
-problem Claude Code's [MCP tool search](https://code.claude.com/docs/en/mcp#scale-with-mcp-tool-search)
-solves (defer tool defs; only names + a search tool load up front; only tools
-actually used enter context). We support both ends of the scale.
+**What this package provides to enable that: the catalog as plain data.**
+`MCPServer` exposes every tool as inspectable values — server identity, tool
+name, `title`, description, the **raw MCP `inputSchema`**, the converted
+`GenerationSchema`, `ToolAnnotations`, and icons — so Multitool (or a host UI:
+pickers, autocomplete) can build on it. Values only; no search, no UI logic here.
 
 **The unit is a server, not a tool.** One MCP **server** (a connected
-`MCP.Client`) exposes *many* tools. So the thing you register and pass around is
-an **`MCPServer`**; an **`MCPTool`** is a single (server, tool) pair. Both can go
-straight into a session.
-
-**Two usage modes:**
-
-1. **Direct add** (small N) — add an `MCPServer` (it exposes *all* its tools as
-   `MCPTool`s) and/or individual `MCPTool`s straight to
-   `LanguageModelSession(tools:)`. Everything in context; simplest path.
-2. **Registry + search** (large N) — put one or more `MCPServer`s in an
-   `MCPToolRegistry`, add the generic search/call tools (built over those
-   servers) to the session, and let the model discover and invoke tools on
-   demand. Only what's used reaches context.
-
-**The three FoundationModels tools** (the generic two take one or more
-`MCPServer`s, or the registry):
-
-- **`MCPTool`** (specific) — one tool, **constrained to that tool's JSON schema**
-  (full per-field constrained decoding). Direct-add, or surfaced on demand.
-- **`MCPSearchTool`** (generic, **agentic**) — input is a natural-language
-  **task**; runs an isolated sub-session over the servers' catalog to pick the
-  right tool(s). See "Agentic search."
-- **`MCPCallTool`** (generic) — input is `{ server, tool, arguments }`: *which
-  server*, *which tool*, then the parameters. `server` and `tool` are
-  **`anyOf`-constrained to the known names**; `arguments` is a generic JSON
-  object. A **different generation constraint** from the specific tool — three
-  fields, params left generic.
-
-**The constraint that matters is valid JSON.** Malformed / unescaped JSON is the
-thing that actually goes wrong; constrained decoding makes it *impossible* —
-every tool here, generic or specific, emits well-formed JSON by construction. The
-specific `MCPTool` adds per-field typing/guides on top; `MCPCallTool` adds
-`anyOf` server/tool names but leaves the params as a valid-JSON object for
-unlimited scale.
-
-**Placement is the only knob — there are no "load modes."** A tool's behavior is
-fully determined by *where you put it*, which is just the two usage modes above —
-so we **drop the `alwaysLoad` / `deferred` / `hidden` enum entirely**:
-
-- **Direct (in the session `tools:` array)** — always in context, schema in the
-  instructions. These *are* the "essential" tools; putting one here is the only
-  way to say so, and the only thing that label ever meant. (≈ Claude Code's
-  `alwaysLoad`.)
-- **Registered (in an `MCPToolRegistry`)** — reachable via the search/call tools,
-  surfaced on demand. The default for scale. (≈ Claude Code's `deferred`.) A
-  registered tool's "essentialness" is irrelevant — search treats them all alike.
-- **Neither** — a tool you want neither in context nor model-discoverable is
-  simply not placed: hold the `MCPServer` / `MCPTool` and call it from your own
-  code. That's all "hidden" ever was.
-
-The registry is therefore **purely the searchable layer**. Anything you want
-always in context you add directly *alongside* it via provider composition
-(`LanguageModelSession(mcp: [registry, clock])`) — no per-tool flag, no enum.
-
-### Agentic search (`MCPSearchTool`)
-
-Search is **agentic and isolated**, not a lexical lookup. The calling agent
-describes the *task* it's trying to accomplish; `MCPSearchTool.call`:
-
-1. spins up a **separate, ephemeral `LanguageModelSession`** — its own context
-   budget, so the full tool catalog **never pollutes the main session**;
-2. seeds it with **curated tool-selection instructions** plus the registry's
-   **listing of every registered tool's name + description**;
-3. has it reason over the catalog and return the best-matching tool(s)
-   (constrained output: tool name(s) + rationale); and
-4. returns those to the parent and **surfaces** the chosen tool(s) so the parent
-   can call them (next section).
-
-The expensive "reason over hundreds of tools" happens off to the side; only the
-selected few re-enter the main session. (The sub-session is itself a
-`LanguageModelSession`, so its selection output is constrained too.)
-
-The search agent is configured where the registry is assembled — via
-`MCPToolRegistry.Builder`:
-
-```swift
-let registry = try await MCPToolRegistry.Builder()
-    .add(server: filesystem)          // registered → searchable
-    .add(server: github)              // registered → searchable
-    .searchAgent(.default)            // an enumerated preset (full session + instructions)
-    .elicitation(coordinator)
-    .build()                          // connects servers, discovers tools (async)
-// `clock` is essential → place it directly, alongside the searchable registry:
-let session = try await LanguageModelSession(mcp: [registry, clock], instructions: …)
-```
-
-**The search agent is a whole session, not just a model.** Picking the tools is
-a complete `LanguageModelSession` — instructions, model, and effort together, not
-a lone model parameter. So `searchAgent(_:)` takes a **`SearchAgent` config** with:
-
-- **enumerated defaults** — e.g. `.default` (and any other named presets we ship),
-  each a curated instructions + model + effort + `maxResults` bundle; and
-- **`.custom`** — the host supplies its own builder that **constructs the unique
-  session used to generate the selection** (its own instructions/model/effort,
-  even extra context), given the candidate catalog. Full control when a preset
-  doesn't fit.
-
-```swift
-.searchAgent(.default)
-.searchAgent(.custom { catalog in
-    LanguageModelSession(instructions: myInstructions(for: catalog))   // host-owned
-})
-```
-
-`build()` is the async discovery point; the result is an `MCPToolProvider`.
-
-**The dynamic-surfacing mechanism (the "real trick").** FoundationModels fixes
-the `tools:` array at construction — you can't mutate a live session's tool list,
-and rebuilding the session busts the cache. **But OS 27 lets you append to the
-transcript, and appended entries are processed incrementally — prior tokens stay
-cached.** So a discovered deferred tool is surfaced by **appending it to the
-ongoing transcript as a custom segment** (a `PromptRepresentable` carrying the
-tool's definition + its `GenerationSchema`), *not* by reconstructing the session.
-The model sees the tool inline, calls it with full constrained decoding, and the
-cache is preserved. **"Add the tool inline where it's needed" = append a segment,
-not rebuild.** Surfacing is **append-only** — there is no documented mid-session
-*removal*, so surfaced tools accumulate in the transcript over a long session;
-the lever for that is transcript trimming (M5), not a teardown API.
-
-> ⚠️ **The one thing M8 must pin against the compiled SDK:** that a custom
-> segment can carry a tool definition that becomes *callable with constrained
-> decoding* — not merely descriptive text in context. Strong
-> evidence exists that custom segments carry content into the transcript cheaply
-> (cache-preserving append); first-party confirmation that this makes a *tool
-> callable* was not found. **Fallback if it doesn't hold:** route the call
-> through `MCPCallTool(server, tool, args)` instead — the args lose *per-tool*
-> typing but are still constrained to valid, escaped JSON, so deferred tools stay
-> usable.
-
-### The registry is also a UI catalog
-
-`MCPToolRegistry` exposes its full contents as plain, inspectable data — every
-tool's server, name, description, **and parameters (the full value list /
-schema)** — so a host UI can drive discovery, pickers, and autocomplete
-against it. **This package exposes the values only; it contains no UI or
-autocomplete logic.**
+`MCP.Client`) exposes *many* tools: an **`MCPServer`** vends all of them; an
+**`MCPTool`** is a single (server, tool) pair. Both go straight into a session.
+A tool you want callable from host code but not model-visible is simply not
+added — hold the `MCPServer` / `MCPTool` and call it yourself.
 
 ## Elicitation: user input, in both directions
 
@@ -352,39 +201,35 @@ coordinator enforces consent.)
 
 ## Connection lifecycle: async discovery, faults, reconnect
 
-Populating an agent with a server's tools is **async** — connect (stdio spawn or
+Populating a session with a server's tools is **async** — connect (stdio spawn or
 HTTP) then `listTools()` — and a connection can drop, reconnect, or change its
 tool set (`tools/list_changed`) mid-run. FoundationModels fixes the `tools:`
-array at construction, so *where the tools live* decides how faults are handled:
+array at construction, so the exposed tool set is a **frozen snapshot**:
 
-- **Direct-add (a frozen snapshot).** You await the server, snapshot its tools,
-  and build the session. That snapshot is frozen: reflecting a fault/reconnect or
-  a changed tool list means **rebuilding the session (cache bust)**. Fine for a
-  small, stable, already-running server. A call that hits a dropped transport
-  surfaces as a tool error — the SDK reconnects; we map the failure to an
-  `isError` result so the agent can react — but *new/removed* tools won't appear
-  without a rebuild.
-- **Registry + generic tools (the resilient default).** The session holds only
-  the stable `MCPSearchTool` / `MCPCallTool` (+ any directly-placed tools), which
-  dispatch through the registry **at call time**. So the registry is the mutable
-  layer: servers can connect late, fault, reconnect, or change their tool lists
-  and the registry just **refreshes — the session stays warm, no rebuild.** This
-  is *why* the registry path is the default for many or unreliable servers.
-
-**Startup blocking follows from placement.** A directly-placed server's tools must
-be in the `tools:` array when the first prompt is built, so they **block session
-construction until connect**, **retrying with exponential backoff** (these are the
-essential ones, by virtue of being placed directly, so a slow or flaky connect is
-retried, not failed-fast; the build hard-fails only when backoff is exhausted).
-Registered servers connect in the **background** (same backoff) and become
-searchable as they come online. `MCPServer` therefore exposes async readiness and
-a state (connecting / ready / faulted); a faulted *registered* server is simply
-absent from search until it recovers, rather than failing the whole session.
+- **Building the session blocks on connect.** A server's tools must be in the
+  `tools:` array when the first prompt is built, so `sessionTools()` awaits
+  readiness, **retrying with exponential backoff** (per-attempt connect timeout,
+  bounded max attempts — host-overridable); it hard-fails only when backoff is
+  exhausted. `MCPServer` exposes a readiness state (connecting / ready / faulted).
+- **Faults mid-run surface as tool errors.** A call that hits a dropped transport
+  is mapped to an `isError` result so the model can react; the server
+  auto-reconnects with the same backoff (using the SDK's transport reconnect
+  where available, wrapping it where not).
+- **Cancellation, progress, health.** Swift task cancellation of an in-flight
+  tool call **propagates to protocol-level `notifications/cancelled`** (via the
+  SDK where it does this, explicitly where it doesn't) so servers don't keep
+  running orphaned work. `notifications/progress` on a long call **resets the
+  per-call timeout** and is surfaced to the host as an event. Responding to
+  server `ping` is SDK plumbing; reconnect triggers on transport error.
+- **Tool-set changes need a rebuild — the host's call.** `tools/list_changed` is
+  **surfaced as an event, never auto-applied** (an invisible rebuild would bust
+  the session cache). Hosts that need live tool-set changes at scale should use
+  FoundationModelsMultitool, which dispatches at call time.
 
 ## Uniform entry point: one `MCPToolProvider` protocol
 
-`MCPTool`, `MCPServer`, and `MCPToolRegistry` all answer the same question —
-*"what tools do I add to a session?"* — so they share one protocol:
+`MCPTool` and `MCPServer` both answer the same question — *"what tools do I add
+to a session?"* — so they share one protocol:
 
 ```swift
 public protocol MCPToolProvider {
@@ -395,27 +240,25 @@ public protocol MCPToolProvider {
 
 - `MCPTool` → `[self]` (one tool).
 - `MCPServer` → awaits readiness, returns its tools as `[MCPTool]`.
-- `MCPToolRegistry` → just the generic `MCPSearchTool` / `MCPCallTool` /
-  `MCPElicitationTool` (the searchable layer).
-- `[any MCPToolProvider]` → flattens (compose servers + loose tools + a registry).
+- `[any MCPToolProvider]` → flattens (compose servers + loose tools).
 
 So every shape is **addable to a session the same way**, and `sessionTools()` is
-the single **async boundary** where discovery happens — directly-placed providers
-block here (their tools must be in the array); registered tools arrive later via
-the registry's search/call tools. A convenience wraps it:
+the single **async boundary** where discovery (connect + `listTools()`) blocks.
+A convenience wraps it:
 
 ```swift
-let session = try await LanguageModelSession(mcp: registry, instructions: …)
-// or:  LanguageModelSession(mcp: serverA, serverB, someTool, instructions: …)
+let session = try await LanguageModelSession(mcp: serverA, serverB, someTool,
+                                             instructions: …)
 ```
 
-That's the symmetry: **get a server and add it, hand over a single tool, or let a
-registry manage discovery dynamically — one protocol, one call site.**
+That's the symmetry: **get a server and add all its tools, or hand over a single
+tool — one protocol, one call site.** (FoundationModelsMultitool conforms its own
+search layer to the same protocol to compose alongside.)
 
 ## Architecture
 
 ```
-LanguageModelSession(mcp: provider)   // provider: MCPTool | MCPServer | MCPToolRegistry
+LanguageModelSession(mcp: provider)   // provider: MCPTool | MCPServer
         │  model decides to call a tool, emits GeneratedContent args
         ▼
    MCPTool  (conforms to FoundationModels.Tool)
@@ -431,26 +274,30 @@ LanguageModelSession(mcp: provider)   // provider: MCPTool | MCPServer | MCPTool
 
 The ⭐ components are the value-add (they touch FoundationModels types).
 `MCPServer` is a thin wrapper over the SDK's `MCP.Client` and owns **no** protocol
-logic of its own; the registry holds metadata and powers search/UI. `MCPTool`,
-`MCPServer`, and `MCPToolRegistry` all conform to **`MCPToolProvider`**
-(`sessionTools()`) — the uniform way to add any of them to a session (above).
+logic of its own. `MCPTool` and `MCPServer` both conform to **`MCPToolProvider`**
+(`sessionTools()`) — the uniform way to add either to a session (above).
 
 1. **`MCPServer`** — the **core unit**: wraps one `MCP.Client` (the caller owns
    connection/transport setup via the SDK) and represents that server *and its
-   many tools*. Connect + `listTools()` are **async**, so it exposes a readiness
-   state (connecting / ready / faulted); once ready it maps each `MCP.Tool` into
-   an `MCPTool` and **vends `[any Tool]`** for direct session use, the registry,
-   or the search/call tools. Declares the **elicitation** client capability and
-   routes server `elicitation/create` requests to the host `ElicitationCoordinator`.
-   **Owns auto-reconnect with retry + exponential backoff** (using the SDK's
-   transport reconnect where available, wrapping it where not) plus tool-list
-   refresh (`tools/list_changed`) — connection *resilience* is the server's job,
-   the *wire protocol* stays the SDK's.
+   many tools*. Connect + `listTools()` are **async** — discovery **follows
+   `nextCursor` to exhaustion** (`tools/list` is paginated; a one-page read would
+   silently truncate the tool set) — so it exposes a readiness state
+   (connecting / ready / faulted); once ready it maps each `MCP.Tool` into an
+   `MCPTool` and **vends `[any Tool]`** for direct session use, and exposes its
+   **catalog as plain data** — tool name, `title`, description, raw
+   `inputSchema`, converted `GenerationSchema`, `ToolAnnotations`
+   (readOnly / destructive / idempotent / openWorld hints), icons — for hosts
+   and FoundationModelsMultitool. Declares the **elicitation** client capability
+   and routes server `elicitation/create` requests to the host
+   `ElicitationCoordinator`. **Owns auto-reconnect with retry + exponential
+   backoff** (using the SDK's transport reconnect where available, wrapping it
+   where not) plus tool-list refresh (`tools/list_changed`) — connection
+   *resilience* is the server's job, the *wire protocol* stays the SDK's.
 
 2. **`MCPTool`** ⭐ — the generic adapter conforming to `FoundationModels.Tool`.
-   Holds the `MCP.Client`, the source `MCP.Tool` (name/description), and the
-   precomputed `GenerationSchema`. Implements `call(arguments:)` by encoding args
-   and delegating to the SDK's `client.callTool`.
+   Holds the `MCP.Client`, the source `MCP.Tool` (name/description/metadata),
+   and the precomputed `GenerationSchema`. Implements `call(arguments:)` by
+   encoding args and delegating to the SDK's `client.callTool`.
 
 3. **`SchemaConverter`** ⭐ — pure function converting an `MCP.Tool.inputSchema`
    (a `MCP.Value` carrying JSON Schema) into `DynamicGenerationSchema` →
@@ -465,34 +312,14 @@ logic of its own; the registry holds metadata and powers search/UI. `MCPTool`,
    `[MCP.Tool.Content]` (`.text`, `.image`, `.audio`, `.resource`,
    `.resourceLink`), `isError: Bool?` (treat `nil` as success), and
    `structuredContent: Value?` — into the adapter's `Output` (a
-   `ToolOutput`/`String`) the model can consume. (Whether v1 surfaces
-   `structuredContent` is a renderer decision; record it either way.)
+   `ToolOutput`/`String`) the model can consume. **Decided:** v1 surfaces
+   `structuredContent` when present, validated against the tool's
+   **`outputSchema`** when the tool declares one — a validation failure is
+   rendered to the model as a note, not hidden. `.resourceLink` results render
+   as links **without dereferencing** (that would need `resources/read`, which
+   is out of scope — see Decisions → Tools only).
 
-6. **`MCPToolRegistry`** ⭐ — assembled via **`MCPToolRegistry.Builder`** (servers
-   + search-agent config + elicitation coordinator; async `build()`). The
-   **searchable layer**: holds one or more `MCPServer`s, vends the session's
-   generic `MCPSearchTool` / `MCPCallTool` / `MCPElicitationTool` (not a fixed
-   tool array — directly-placed tools are composed alongside it), answers searches
-   over its tools, builds the custom segment to surface a tool on demand, and
-   **exposes the full catalog as plain data (server, tool name, description,
-   parameters/schema) for host UIs** — values only, no UI logic. **Refreshes** on
-   reconnect / `tools/list_changed` so search and call stay current **without
-   rebuilding the session.** Holds metadata; the SDK owns connections.
-
-7. **`MCPSearchTool`** ⭐ — a generic `FoundationModels.Tool` built over a
-   registry (or one or more `MCPServer`s). Constrained input `{ task }`; `call`
-   runs the **isolated agentic sub-session** (see "Agentic search") across those
-   servers' tools and surfaces the selection. Can read the parent transcript via
-   `ToolCallContext`.
-
-8. **`MCPCallTool`** ⭐ — a generic `FoundationModels.Tool` built over a registry
-   (or one or more `MCPServer`s). Constrained input `{ server, tool, arguments }`:
-   `server` and `tool` are `anyOf`-constrained to known names; `arguments` is a
-   valid-JSON object (not per-tool typed). Resolves the (server, tool) pair and
-   delegates to that server's `callTool`. The fallback invoke path when a tool
-   isn't surfaced as a specific `MCPTool`.
-
-9. **`MCPElicitationTool`** ⭐ — a `FoundationModels.Tool` that lets the *agent*
+6. **`MCPElicitationTool`** ⭐ — a `FoundationModels.Tool` that lets the *agent*
    elicit. Constrained input `{ message, requestedSchema }` (the flat-primitive
    elicitation subset); `call` routes to the shared **`ElicitationCoordinator`**,
    awaits the user's `accept` / `decline` / `cancel`, and returns the structured
@@ -528,18 +355,20 @@ Unsupported/edge JSON Schema (`anyOf`/`oneOf` unions, `additionalProperties`,
 policy: degrade to a permissive type (e.g. a string the tool parses) and **log
 what was dropped** rather than silently misrepresenting the schema.
 
-**Two targets, two policies** (see Model backends). The **built-in path** degrades to
-`GenerationSchema`'s expressible subset (the table above). The **MLX/Router path feeds
-the raw JSON Schema to xgrammar**, which accepts a *different* — larger but still
-partial — subset: `anyOf`/`oneOf`/`additionalProperties` pass natively, but
-`$ref`/`allOf`/`format` must be **normalized** (inline `$ref`, merge `allOf`,
-drop/translate `format`) or are **rejected with a clear error**. The "log what was
-dropped" rule applies on both; the MLX path simply drops far less.
+Two notes on the input side. **Dialect:** MCP 2025-11-25 makes JSON Schema
+**2020-12** the default `inputSchema` dialect — the converter targets that
+dialect. **The mapping bounds only our declaration:** the **raw `inputSchema` is
+also exposed verbatim** (see Models & enforcement), so an external driver that
+compiles it directly — e.g. FoundationModelsMultitool via xgrammar — is not
+limited by this table.
 
 ## Milestones
 
 - [ ] **M0 — Scaffold.** SwiftPM package; depend on
-  `.product(name: "MCP", package: "swift-sdk")` and link `FoundationModels`.
+  `.product(name: "MCP", package: "swift-sdk")`, link `FoundationModels`, and
+  depend on `swissarmyhammer/mlx-swift-lm` (`MLXFoundationModels` — **mandatory**;
+  the schema-constrained model path). **Verify the pinned swift-sdk's supported
+  MCP protocol revision (target: 2025-11-25) and its elicitation surface.**
   Decide module name(s). CI on macOS (Xcode for OS 27 SDK).
 - [ ] **M1 — Schema translation.** `SchemaConverter` (`MCP.Value` →
   `GenerationSchema`) + the `GeneratedContent` ⇄ `MCP.Value` codec. Map JSON
@@ -549,17 +378,24 @@ dropped" rule applies on both; the MLX path simply drops far less.
   corpus of real MCP `inputSchema` values (no FoundationModels runtime needed for
   most of it).
 - [ ] **M2 — `MCPTool` adapter.** Conform to `Tool`; wire `call(arguments:)` to
-  the SDK's `client.callTool`; render results & errors via `ToolContentRenderer`.
+  the SDK's `client.callTool`; render results & errors via `ToolContentRenderer`
+  (incl. `structuredContent` validated against `outputSchema` when declared).
 - [ ] **M3 — `MCPServer`.** Wrap an already-connected `MCP.Client` and expose its
-  tools as `[MCPTool]` / `[any Tool]` for direct session use; optional tool-list
-  refresh; name collision handling across servers. Connection/transport setup
-  stays with the SDK and the caller — we don't reimplement it.
+  tools as `[MCPTool]` / `[any Tool]` for direct session use; `listTools()`
+  pagination to exhaustion; optional tool-list refresh; name collision handling
+  across servers; the `MCPToolProvider` conformances + the
+  `LanguageModelSession(mcp:)` convenience. Connection/transport setup stays with
+  the SDK and the caller — we don't reimplement it.
 - [ ] **M4 — End-to-end.** A `LanguageModelSession` driven against a real local
-  MCP server (e.g. stdio filesystem/echo server) doing an actual tool call.
-- [ ] **M5 — Hardening.** Cancellation, timeouts, `isError` mapping, image/audio
-  content handling, structured logging, docs + a sample. **Tool results are the
-  context-window cost** (an MCP result can be huge), so `ToolContentRenderer`
-  needs a size/trimming strategy — this is where Apple's
+  MCP server (e.g. stdio filesystem/echo server) doing an actual tool call —
+  once with the system model, once with an `MLXLanguageModel`-backed session.
+- [ ] **M5 — Hardening.** Cancellation (Swift task cancel → protocol
+  `notifications/cancelled` so servers don't run orphaned work), per-call
+  timeouts (reset by `notifications/progress`, which also surfaces to the host),
+  `isError` mapping, image/audio content handling, structured logging, docs + a
+  sample. **Tool results are the context-window cost** (an MCP result can be
+  huge), so `ToolContentRenderer` needs a size/trimming strategy — this is where
+  Apple's
   [managing-the-context-window](https://developer.apple.com/documentation/foundationmodels/managing-the-context-window)
   transcript guidance applies (the *output* side, distinct from the
   constrained-decoding win on the *input* side).
@@ -567,36 +403,16 @@ dropped" rule applies on both; the MLX path simply drops far less.
   real local MCP server over stdio, registers its tools on a
   `LanguageModelSession`, and runs a prompt that triggers a tool call. Doubles as
   the human-facing E2E.
-- [ ] **M7 — Registry + generic tools.** `MCPToolRegistry` (built via
-  `MCPToolRegistry.Builder`) over one+ `MCPServer`s (all registered/searchable; no
-  load modes) and a public catalog (server/tool/description/parameters) for host UIs; the
-  `MCPToolProvider` conformances + `LanguageModelSession(mcp:)` convenience;
-  generic `MCPCallTool` (constrained `{ server, tool, arguments }`, server/tool as
-  `anyOf` → SDK `callTool`). The direct-add path stays unchanged.
-- [ ] **M8 — Agentic search + dynamic surfacing.** `MCPSearchTool` running an
-  isolated sub-session over the catalog from a task description. Surface a
-  discovered deferred tool by appending a custom segment (cache-preserving) and
-  **confirm it's callable with constrained decoding**; fall back to `MCPCallTool`
-  if not. (The riskiest milestone — see Still open #4.)
-- [ ] **M9 — Elicitation (both directions).** Declare the elicitation client
+- [ ] **M7 — Elicitation (both directions).** Declare the elicitation client
   capability on `MCPServer` and route server `elicitation/create` → the host
   `ElicitationCoordinator`; add `MCPElicitationTool` so the agent can elicit
   through the same coordinator. Handle `accept`/`decline`/`cancel`; keep secrets
   out of form mode (URL mode).
-
-- [ ] **M10 — MLX backend on FoundationModelsRouter.** Build the MLX backend on the
-  **FoundationModelsRouter** sibling package (it owns model selection + the
-  `MLXGuidedGeneration`/xgrammar engine); depend on Router, not `mlx-swift-lm`
-  directly. Constrained args come from the **raw MCP `inputSchema`** via Router's
-  `Grammar.jsonSchema` / `respond(to:matching:)` (no `GenerationSchema` round-trip);
-  normalize to xgrammar's accepted JSON-Schema subset (`$ref`/`allOf`/`format`).
-  **Spike Path A vs B:** confirm whether an `MLXLanguageModel`-backed
-  `LanguageModelSession` does native tool orchestration with xgrammar-constrained args
-  (Path A, keeps the bridge); if not, own the loop on `RoutedSession`
-  `respond(to:matching:)` (Path B). Run the M1 corpus through Router's guided
-  generation and assert **100% schema-valid args**. Built-in stays the default; this
-  is the full-fidelity path. (FoundationModelsRouter is itself planning-stage on
-  `mlx-swift-lm@mlx-foundationmodels` / PR #334 — co-developed.)
+- [ ] **M8 — Catalog surface for Multitool.** Freeze the public catalog API
+  (`MCPServer` → server identity, tool name, `title`, description, raw
+  `inputSchema`, `GenerationSchema`, `ToolAnnotations`, icons) that
+  FoundationModelsMultitool builds its search on; validate by consuming it from
+  a stub.
 
 ## Testing strategy
 
@@ -613,172 +429,112 @@ dropped" rule applies on both; the MLX path simply drops far less.
 - **Scope (decided):** consume-only for v1 — MCP server tools → usable in a
   `LanguageModelSession` — **plus a sample app** (see M6). The reverse direction
   (expose FoundationModels as an MCP *server*) is explicitly out of scope for v1.
-- **Two model backends, one API (decided):** constrained generation is required; the
-  bridge is provider-agnostic above `LanguageModelSession`. **Built-in backend** =
-  Apple `SystemLanguageModel` used **directly** + its guided generation (closed;
-  enforcement must be verified). **MLX backend** = built on **FoundationModelsRouter**
-  (sibling package), which owns RAM-aware model selection and the **xgrammar** engine
-  (`MLXGuidedGeneration`) — we **depend on Router, not vendor xgrammar**. xgrammar
-  needs the decode loop, so it **cannot** attach to the closed system model; the two
-  backends take **different constrained-decoding paths**, explicitly accepted. The MLX
-  constraint vehicle is the **raw MCP `inputSchema` → Router `Grammar.jsonSchema` /
-  `respond(to:matching:)`** (no `GenerationSchema` round-trip). `SchemaConverter` and
-  the whole bridge are shared; the host chooses the backend at session construction.
-  (See **Model backends**; backend work is M10.)
+- **Spec revision (decided):** targets MCP **2025-11-25** (the current revision).
+  M0 verifies the pinned swift-sdk actually speaks it (and its elicitation
+  surface); `SchemaConverter` targets the JSON Schema **2020-12** default dialect.
+- **Enforcement (decided):** the bridge never drives generation — it **declares**
+  each tool's schema and the session's engine **enforces** it (Apple's guided
+  generation on the system model; xgrammar under an MLX-backed session). The
+  dependency on **`swissarmyhammer/mlx-swift-lm` is mandatory**
+  (`MLXFoundationModels` / `MLXGuidedGeneration`) so the schema-constrained model
+  path is always available. The **raw MCP `inputSchema` is exposed verbatim**
+  alongside the converted `GenerationSchema` as the integration point for
+  external constraint drivers (FoundationModelsMultitool).
+- **Tool search is out of scope (decided):** this package **directly exposes
+  tools** — no registry, no search tool, no generic call tool, no deferred
+  surfacing. Tool search and dynamic surfacing live in
+  **`swissarmyhammer/FoundationModelsMultitool`**, built on this package's
+  catalog and FoundationModelsRouter. *(Supersedes the earlier registry /
+  agentic-search / custom-segment-surfacing decisions, which move to Multitool.)*
+- **Catalog as plain data (decided):** `MCPServer` exposes tools as inspectable
+  values — name, `title`, description, raw `inputSchema`, `GenerationSchema`,
+  **`ToolAnnotations`** (readOnly / destructive / idempotent / openWorld), icons —
+  for Multitool and host UIs. Annotations are **untrusted hints** per spec: the
+  bridge never auto-retries or gates on them; hosts may (e.g. confirm
+  destructive-hinted calls). **No search or UI/autocomplete code lives here.**
 - **Transports (decided):** ship **stdio + HTTP** from the start
   (`StdioTransport` for local subprocess servers, `HTTPClientTransport` for
   remote/SSE), since swift-sdk provides both cheaply.
+- **Authorization (decided — delegated):** OAuth for remote HTTP servers is the
+  **host's responsibility**: the host supplies an authenticated transport /
+  token via the SDK's `HTTPClientTransport` hooks. This package implements no
+  OAuth flow (discovery, `WWW-Authenticate`, consent are host/SDK concerns);
+  without host-provided auth, HTTP works against unauthenticated servers only.
+- **Client capabilities (decided):** v1 declares **elicitation only**. **Sampling**
+  (`sampling/createMessage`) and **roots** are *not* declared in v1 — servers
+  requiring them degrade per spec. Recorded as deliberate: sampling is the
+  natural post-v1 addition (this client uniquely owns a `LanguageModelSession`;
+  a `SamplingCoordinator` would mirror the elicitation design), and roots would
+  be a trivial host-provided list on `MCPServer`. Deferred to keep v1's
+  capability surface minimal, not because they don't fit.
+- **Tools only (decided):** v1 consumes **tools** (plus elicitation as above).
+  **Prompts, resources, completion (`completion/complete`), server→client log
+  routing, and experimental tasks are out of scope** — they're host-app surface,
+  not tool-bridge surface. Consequence recorded: `.resourceLink` tool results
+  are rendered as links, **not dereferenced** (that would require
+  `resources/read`).
 - **Core unit is `MCPServer` (decided):** one MCP server exposes many tools. You
-  add an `MCPServer` (all its tools) or a single `MCPTool` to a session, and put
-  `MCPServer`s in the registry / search / call. `MCPCallTool`'s constraint is
-  `{ server, tool, arguments }` (server & tool `anyOf`-constrained; arguments a
-  valid-JSON object).
-- **Placement, not load modes (decided):** there is **no `alwaysLoad` / `deferred`
-  / `hidden` enum**. A tool's behavior is its *placement*: **direct** (in the
-  session `tools:` array → always in context = "essential"), **registered** (in an
-  `MCPToolRegistry` → searchable/surfaced on demand), or **neither** (held and
-  invoked from host code = the old "hidden"). The registry is purely the searchable
-  layer; essential tools are composed alongside it (`mcp: [registry, clock]`).
-- **Search is agentic (decided):** `MCPSearchTool` runs an isolated sub-session
-  over the registry catalog from a task description — not a lexical match.
-- **Surfacing (decided, pending SDK verification):** surface discovered deferred
-  tools by appending a **custom segment** to the transcript (cache-preserving,
-  constrained); `MCPCallTool` (generic, valid-JSON-constrained) is the fallback.
-  *This supersedes the earlier "generic-invoke-only" direction — generic invoke
-  is now the fallback, not the primary.*
-- **Registry as UI catalog (decided):** the registry exposes tools + parameters
-  as plain data for host UIs; **no UI/autocomplete code lives in this package.**
+  add an `MCPServer` (all its tools) or a single `MCPTool` to a session.
 - **Elicitation is unified (decided):** one host `ElicitationCoordinator` serves
   both server-initiated elicitation (a declared client capability on `MCPServer`)
   and agent-initiated elicitation (`MCPElicitationTool`). The package defines the
   coordinator protocol; the host owns the UI; secrets go via URL mode, not form
   mode.
-- **Resilience (decided):** the **registry path keeps the session warm** across
-  late connects / faults / reconnects / `tools/list_changed` (refresh, no
-  rebuild); **direct-add is a frozen snapshot** (rebuild to change its tool set).
-  Directly-placed servers block startup until connect, **retrying with exponential
-  backoff** (essential by virtue of placement ⇒ retry, not fail-fast; hard-fail
-  only when backoff is exhausted); registered servers connect in the background.
-  Every `MCPServer` auto-reconnects with backoff regardless of placement.
-- **Uniform entry point (decided):** `MCPTool` / `MCPServer` / `MCPToolRegistry`
-  conform to `MCPToolProvider`; `sessionTools() async throws` is the single
-  discovery boundary, and `LanguageModelSession(mcp:)` is the one call site.
-- **Registry built via a builder (decided):** `MCPToolRegistry.Builder` assembles
-  the registry — servers (all registered/searchable; no per-tool modes), the
-  elicitation coordinator, and **the search agent**. The search agent is a **whole
-  `LanguageModelSession`, not
-  a lone model** — `searchAgent(_:)` takes a `SearchAgent` config: **enumerated
-  defaults** (`.default` + named presets bundling instructions/model/effort/max
-  results) **or `.custom`** (host supplies a builder that constructs the unique
-  selection session from the candidate catalog). `build()` is the async step that
-  connects/discovers and returns a ready registry.
+- **Resilience (decided):** the exposed tool set is a **frozen snapshot** (rebuild
+  to change it). Servers block session construction until connect, **retrying
+  with exponential backoff** (hard-fail only when backoff is exhausted); every
+  `MCPServer` auto-reconnects with the same backoff; mid-run transport faults map
+  to `isError` results; Swift cancellation propagates to protocol
+  `notifications/cancelled`; `tools/list_changed` is surfaced as an event, never
+  auto-applied.
+- **Uniform entry point (decided):** `MCPTool` / `MCPServer` conform to
+  `MCPToolProvider`; `sessionTools() async throws` is the single discovery
+  boundary, and `LanguageModelSession(mcp:)` is the one call site.
 
 ### Still open
 
 1. ✅ **Module name — decided:** one library module **`FoundationModelsMCP`**
    (`import FoundationModelsMCP`; matches the repo, distinct from the SDK's
    `import MCP`), plus a separate executable sample target.
-2. ✅ **Min OS — decided: OS 27 only.** The whole package (including
-   custom-segment dynamic surfacing) targets OS 27 unconditionally — no
-   `@available` branching, no OS-26 degrade path. The swift-sdk floor (macOS 13 /
-   iOS 16, Swift 6+) is far below this; pin its latest stable tag at M0.
+2. ✅ **Min OS — decided: OS 27 only.** The whole package targets OS 27
+   unconditionally — no `@available` branching, no OS-26 degrade path. The
+   swift-sdk floor (macOS 13 / iOS 16, Swift 6+) is far below this; pin its
+   latest stable tag at M0.
 3. ✅ **Constraint mapping — decided: full in v1, `pattern` best-effort.** v1 maps
    `enum`→`anyOf`, `minimum`/`maximum`→`range`, `minItems`/`maxItems`→count as
    hard guides; **`pattern` is best-effort** — try-compile the JSON Schema
    (ECMA-262) regex as a Swift `Regex`; on failure, fall back to a logged
    description hint. Implementation must still pin against the compiled SDK:
-   numeric guides are `Decimal` (clean JSON integer/number → `Decimal`), exclusive
-   vs. inclusive bounds (`exclusiveMinimum` → epsilon/round, documented), and
-   count-guide behavior on nested arrays. **Scope:** this is a *built-in-backend*
-   risk — its enforcement lives inside Apple's closed decoder. The **MLX backend
-   compiles the schema with vendored xgrammar in a loop we own**, so it is
-   directly unit-testable (and may bypass the mapping entirely by compiling the raw
-   MCP JSON Schema). The MLX path is therefore the independent check on this
-   mapping, not a second copy of the risk.
-4. ✅ **Custom-segment surfacing — decided: bet on it (primary path).** v1 makes
-   custom-segment surfacing the *primary* deferred-tool path (per-tool
-   constrained, cache-preserving); `MCPCallTool` remains only as the safety-net
-   fallback. **Because this is load-bearing and still unverified, run it as an
-   early M8 spike** — confirm against the compiled SDK that a custom segment makes
-   a tool callable with constrained decoding *before* building the rest of the
-   registry/search path on it.
-5. ✅ **Surfacing vehicle — decided: custom segment.** "Skills /
-   `allowsDeactivation`" came from an unreliable web snippet and **is not in the
-   FoundationModels docs** — dropped. The vehicle is a custom segment. Tradeoff
-   accepted: surfacing is **append-only (no mid-session removal)**; surfaced
-   tools accrue until trimmed (M5). (Custom segments themselves are still pinned
-   by the M8 spike — item 4.)
-6. ✅ **Search tuning — decided.** The search agent is a **whole
-   `LanguageModelSession`, not just a model** — instructions + model + effort
-   together. Configured via `Builder.searchAgent(_:)` as a **`SearchAgent` config**:
-   **enumerated defaults** (`.default` + any named presets, each bundling
-   instructions/model/effort/`maxResults`) **or `.custom`**, where the host
-   supplies its own builder that constructs the unique session that generates the
-   selection (given the candidate catalog). Returns **ranked top-N picks (default
-   cap 5)** + rationale. **`MCPSearchTool` is a pure read: it returns picks; the
-   *parent* surfaces them** (appends the custom segment) — search never mutates the
-   transcript, so the one transcript-write stays an explicit, debuggable parent
-   step (no auto-surface). Catalog: full into the sub-session for v1, but **lexical
-   pre-filter + log when it exceeds a token budget** so the sub-session's own
-   context doesn't blow up.
-7. ✅ **Cross-field constraint in `MCPCallTool` — decided: global union +
-   validate/auto-correct.** Dependent `anyOf` (constrain `tool` to the chosen
-   `server`'s tools) is assumed *not* runtime-expressible — constrained decoding
-   resolves the whole schema before the model picks `server`. So `tool` is
-   `anyOf`-constrained to the **global union** of all known tool names (always a
-   real tool *somewhere*); after generation, validate the `(server, tool)` pair.
-   If the tool's owning server is **unambiguous**, auto-correct `server` (no
-   round-trip); if **ambiguous** (same tool name on multiple servers), re-prompt.
-   Pin whether dependent enums are actually expressible at M7 — if they are,
-   prefer them and keep validate as the safety net.
-8. ✅ **Agent-elicitation arg shape — decided: full `requestedSchema`.**
+   numeric guides are `Decimal` (clean JSON integer/number → `Decimal`),
+   exclusive vs. inclusive bounds (`exclusiveMinimum` → epsilon/round,
+   documented), and count-guide behavior on nested arrays. Enforcement inside
+   Apple's closed decoder can't be inspected — the MLX-backed session (mandatory
+   `mlx-swift-lm` dependency) is the independent, testable enforcement path,
+   and the raw-`inputSchema` catalog gives external drivers the same escape.
+4. ✅ **Agent-elicitation arg shape — decided: full `requestedSchema`.**
    `MCPElicitationTool` takes `{ message, requestedSchema }` and the **model
    generates the flat-primitive `requestedSchema` itself, constrained** (mirrors
    exactly what a server sends over the wire — one shape for both elicitation
    directions, no second representation to maintain). Constrained decoding keeps
-   the generated schema well-formed and within the flat-primitive subset. A field
-   carrying **`secret: true` (or `format: "url"`) routes to URL mode**, never form
-   mode — the coordinator honors it (consistent with the no-secrets-in-form-mode
-   rule).
-9. ✅ **Lifecycle policy — decided.**
-   - **Directly-placed (essential) connect failure → retry with backoff.** A
-     directly-placed server is *essential* (that's what placing it directly means),
-     so a failed/timed-out connect isn't an immediate fail-or-degrade decision:
-     **retry with exponential backoff** (per-attempt connect timeout, bounded total
-     budget / max attempts). The session blocks on these retries during
-     construction. Only if backoff is **exhausted** does it surface a hard failure.
-     Defaults (per-attempt timeout, backoff base/cap, max attempts) are
-     host-overridable on the Builder. Every `MCPServer` auto-reconnects with the
-     same backoff regardless of placement — it's connection hygiene, not a mode.
-   - **Registered servers** keep connecting in the background (same backoff policy)
-     and become searchable as they come online; their failure never blocks startup.
-   - **A late connect's effect depends on *where its tools live*** — the rebuild
-     trigger is the contribution, not the lateness:
-     - **Directly-placed tools (in the fixed `tools:` array)** can't appear in a
-       live session, so a late connect (or reconnect) of such a server **justifies
-       a transcript/session rebuild** — that's exactly why it was placed directly.
-     - **A server feeding the search/registry path** needs **no rebuild**: the
-       session already holds the stable `MCPSearchTool`/`MCPCallTool`, so the
-       registry just refreshes and there are simply *more tools to discover*.
-       Session stays warm.
-   - **Direct-add session on `tools/list_changed` → host's call.** Direct-add is
-     the explicit frozen snapshot; the package **surfaces the change event but does
-     not auto-rebuild** (that would bust the cache invisibly). Hosts wanting live
-     tool-set changes use the registry path.
+   the generated schema well-formed and within the flat-primitive subset. A
+   sensitive field (or `format: "url"`) routes to **URL mode**, never form mode —
+   the spec-backed rule is no-secrets-in-form-mode; any `secret` marker is our
+   convention, honored by the coordinator, not a spec field.
+5. ✅ **Lifecycle policy — decided.**
+   - **Connect failure → retry with backoff.** A failed/timed-out connect is
+     retried with **exponential backoff** (per-attempt connect timeout, bounded
+     total budget / max attempts); the session blocks on these retries during
+     construction and hard-fails only when backoff is exhausted. Defaults are
+     host-overridable. Every `MCPServer` auto-reconnects with the same backoff —
+     it's connection hygiene, not a mode.
+   - **`tools/list_changed` → host's call.** The exposed tool set is an explicit
+     frozen snapshot; the package **surfaces the change event but does not
+     auto-rebuild** (that would bust the cache invisibly). Hosts needing live
+     tool-set changes use FoundationModelsMultitool.
 
-10. ⏳ **MLX backend specifics — open (pinned at M10).** **Resolved:** the MLX
-    constraint vehicle is the **raw MCP `inputSchema`** via Router's
-    `Grammar.jsonSchema` / `respond(to:matching:)` — no `GenerationSchema` round-trip
-    (Router exposes raw-schema constraint first-class). Model selection, masking cost,
-    and weight distribution are **Router's** concern, not ours. **Still open:** (a)
-    **Path A vs B** — does an `MLXLanguageModel`-backed `LanguageModelSession` do native
-    tool orchestration with xgrammar-constrained args (keep the bridge, Path A), or must
-    `FoundationModelsMCP` own the loop on `RoutedSession` (Path B)? Router calls the
-    `LanguageModelSession` interop "not load-bearing," so this is the M10 spike. (b)
-    **normalizing MCP schemas to xgrammar's accepted subset** — `$ref`/`allOf`/`format`
-    are rejected, so inline/merge/translate-or-error before handing the schema to
-    Router. xgrammar attaching to the closed system model is ruled out (no logit
-    access); these are MLX-only.
+*(Former open items on registry search tuning, custom-segment surfacing, and
+generic-call-tool cross-field constraints moved out with tool search — they are
+FoundationModelsMultitool concerns now.)*
 
 ## Prior art
 
@@ -806,15 +562,22 @@ learn from it, not adopt it.
 
 ## References
 
+- MCP specification (2025-11-25 — the targeted revision) —
+  https://modelcontextprotocol.io/specification/2025-11-25
+- MCP elicitation (2025-11-25) —
+  https://modelcontextprotocol.io/specification/2025-11-25/client/elicitation
 - MCP Swift SDK — https://github.com/modelcontextprotocol/swift-sdk
-- FoundationModelsRouter (sibling pkg — the MLX backend provider; owns RAM-aware model
-  selection + the xgrammar engine) — ../FoundationModelsRouter
-- MLX + xgrammar stack it builds on (`MLXFoundationModels`, `MLXGuidedGeneration`) —
-  https://github.com/swissarmyhammer/mlx-swift-lm/tree/mlx-foundationmodels (PR #334)
+- mlx-swift-lm (**mandatory dependency** — `MLXFoundationModels` /
+  `MLXGuidedGeneration`, the xgrammar schema-constrained model path) —
+  https://github.com/swissarmyhammer/mlx-swift-lm
+- FoundationModelsMultitool (sibling pkg — tool search / dynamic surfacing, built
+  on this package's catalog) —
+  https://github.com/swissarmyhammer/FoundationModelsMultitool
+- FoundationModelsRouter (sibling pkg — model selection; used by Multitool, not by
+  this package) — ../FoundationModelsRouter
 - FoundationModels `Tool` protocol — https://blakecrosley.com/blog/foundation-models-on-device-llm
 - Dynamic schemas in FoundationModels — https://justin.searls.co/posts/how-to-generate-dynamic-data-structures-with-apple-foundation-models/
 - `@Generable` / `@Guide` & constrained decoding — https://developer.apple.com/videos/play/wwdc2025/301/
 - Managing the context window — https://developer.apple.com/documentation/foundationmodels/managing-the-context-window
-- Claude Code MCP tool search (alwaysLoad / deferred) — https://code.claude.com/docs/en/mcp#scale-with-mcp-tool-search
-- Custom segments & transcript append (WWDC26) — https://developer.apple.com/videos/play/wwdc2026/339/
-- MCP elicitation — https://modelcontextprotocol.io/specification/draft/client/elicitation
+- Claude Code MCP tool search (the pattern Multitool implements) —
+  https://code.claude.com/docs/en/mcp#scale-with-mcp-tool-search
