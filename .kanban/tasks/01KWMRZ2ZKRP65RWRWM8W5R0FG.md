@@ -17,8 +17,8 @@ comments:
   timestamp: 2026-07-03T22:52:10.785882+00:00
 depends_on:
 - 01KWMRYGMXC08VX2W7P2DK2X0W
-position_column: doing
-position_ordinal: '80'
+position_column: done
+position_ordinal: '8280'
 title: 'GeneratedContentCodec: GeneratedContent ⇄ MCP.Value round-trip'
 ---
 ## What\nCreate `Sources/FoundationModelsMCP/GeneratedContentCodec.swift`: convert FoundationModels `GeneratedContent` → `[String: MCP.Value]` (outbound tool-call arguments) and `MCP.Value` → `GeneratedContent` (for round-tripping). Handle nested objects, arrays, strings (incl. unicode/escaping), integer vs. double distinction, booleans, and null.\n\n- [x] GeneratedContent → [String: MCP.Value]\n- [x] MCP.Value → GeneratedContent\n- [x] Numeric fidelity (int vs double), null, unicode strings\n\n## Acceptance Criteria\n- [x] Round-trip of any supported value tree is lossless (value-equal)\n- [x] Integers survive as integers (no silent double-ification) where the SDK distinguishes them\n\n## Tests\n- [x] `Tests/FoundationModelsMCPTests/CodecTests.swift`: round-trip property-style tests over generated value trees (nested objects/arrays, numbers, null, unicode)\n- [x] `swift test --filter Codec` green\n\n## Workflow\n- Use `/tdd` — write failing tests first, then implement to make them pass.
