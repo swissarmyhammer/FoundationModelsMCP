@@ -1,0 +1,1 @@
+{"id":"01KWMRY413XDEB0PFP1A4KMZ3B","timestamp":"2026-07-03T19:57:49.475144Z","op":"create","item_id":"todo","forward_patch":"--- original\n+++ modified\n@@ -0,0 +1,2 @@\n+name: To Do\n+order: 0\n","reverse_patch":"--- original\n+++ modified\n@@ -1,2 +0,0 @@\n-name: To Do\n-order: 0\n","transaction_id":null}

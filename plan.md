@@ -123,11 +123,13 @@ generated is the job of whatever engine backs the `LanguageModelSession`:
   [`swissarmyhammer/mlx-swift-lm`](https://github.com/swissarmyhammer/mlx-swift-lm)
   (`MLXFoundationModels` + `MLXGuidedGeneration`), a drop-in model for
   `LanguageModelSession` whose generation is **xgrammar-constrained** (logit
-  masking). **This dependency is mandatory** — the package depends on
-  `mlx-swift-lm` so schema-constrained model support is always available, and it
-  is the enforcement path we can actually inspect and verify (xgrammar cannot
-  attach to the closed system model — no logit access — so the two engines are
-  what they are).
+  masking) — the inspectable, verifiable engine (xgrammar cannot attach to the
+  closed system model — no logit access — so the two engines are what they
+  are). **This package does not depend on mlx-swift-lm or MLX**: the
+  FoundationModels API is the seam, so an MLX-backed session works through the
+  bridge with zero MCP-side code — the host (or FoundationModelsMultitool, via
+  Router) supplies the model. Engine-level verification of xgrammar enforcement
+  lives downstream, where MLX is actually a dependency.
 
 The bridge code is identical over both; the host picks the model at session
 construction. Two consequences:
@@ -163,6 +165,16 @@ FoundationModelsRouter for the search model.
 name, `title`, description, the **raw MCP `inputSchema`**, the converted
 `GenerationSchema`, `ToolAnnotations`, and icons — so Multitool (or a host UI:
 pickers, autocomplete) can build on it. Values only; no search, no UI logic here.
+
+**And the catalog is live.** MCP tool sets are dynamic by spec (`tools/list` is
+a point-in-time answer; `tools/list_changed` can arrive any time), so the
+catalog is also an **observable stream of versioned snapshots**
+(`catalogUpdates` — see the Dynamic discovery decision). Multitool stays the one
+fixed tool in the session and absorbs every change below it: it composes
+**multiple sources — plain `Tool`s and `MCPServer`s, several of each** — into a
+single searchable set, keyed on stable (server, tool) identity. A plain `Tool`
+is just the trivial never-changing source; this package provides the dynamic
+one.
 
 **The unit is a server, not a tool.** One MCP **server** (a connected
 `MCP.Client`) exposes *many* tools: an **`MCPServer`** vends all of them; an
@@ -287,7 +299,14 @@ logic of its own. `MCPTool` and `MCPServer` both conform to **`MCPToolProvider`*
    **catalog as plain data** — tool name, `title`, description, raw
    `inputSchema`, converted `GenerationSchema`, `ToolAnnotations`
    (readOnly / destructive / idempotent / openWorld hints), icons — for hosts
-   and FoundationModelsMultitool. Declares the **elicitation** client capability
+   and FoundationModelsMultitool. The catalog is **observable**: `catalog` is
+   the current `ToolCatalog` snapshot (stable server identity, a per-server
+   **epoch**, server state, and per-tool **fingerprints** — hash of name + raw
+   `inputSchema` + annotations), and `catalogUpdates: AsyncStream<ToolCatalog>`
+   emits a new snapshot on every **coalesced** `tools/list_changed` re-list, on
+   reconnect (an implicit re-list — the returning server may differ), and on
+   readiness-state changes; `tool(named:)` resolves a name against the
+   **current** catalog (nil once gone). Declares the **elicitation** client capability
    and routes server `elicitation/create` requests to the host
    `ElicitationCoordinator`. **Owns auto-reconnect with retry + exponential
    backoff** (using the SDK's transport reconnect where available, wrapping it
@@ -377,38 +396,41 @@ they are the living documentation of every capability in this plan:
    config.yaml?") so the model picks among several tools. Also demonstrates
    error bubbling: a prompt about a missing file produces an `isError` result
    the model recovers from in-session.
-3. **`MLXConstrained`** — `FileAssistant`, but the session is backed by
-   `MLXLanguageModel` (the mandatory `mlx-swift-lm` path). Demonstrates that
-   the bridge code is unchanged while argument generation is
-   xgrammar-constrained; runs a prompt batch and checks every emitted argument
-   object against the tool's raw `inputSchema`.
-4. **`ToolPicking`** — provider composition: one loose `MCPTool` (a single
+3. **`ToolPicking`** — provider composition: one loose `MCPTool` (a single
    (server, tool) pair) plus a native Swift `Tool` in the same session
    (`LanguageModelSession(mcp: clockTool, readFileTool)`), showing
    `MCPToolProvider` flattening and that MCP and native tools coexist.
-5. **`RemoteHTTP`** — connects to a remote server over `HTTPClientTransport`
+4. **`RemoteHTTP`** — connects to a remote server over `HTTPClientTransport`
    with a host-supplied bearer token, demonstrating the authorization decision
    (auth is the host's; the bridge just uses the authenticated transport).
-6. **`ElicitingAgent`** — both elicitation directions through one console
+5. **`ElicitingAgent`** — both elicitation directions through one console
    `ElicitationCoordinator`: a server tool that pauses mid-call with
    `elicitation/create`, and the model calling `MCPElicitationTool` to ask the
    user a structured question. Shows accept / decline / cancel at the terminal.
-7. **`CatalogBrowser`** — connects one or more servers and prints the full
+6. **`CatalogBrowser`** — connects one or more servers and prints the full
    catalog (name, `title`, description, `ToolAnnotations`, icons, raw
    `inputSchema`, converted `GenerationSchema`) — the exact M8 surface
    FoundationModelsMultitool consumes; doubles as its integration stub.
+7. **`DynamicToolset`** — a toy stdio server that adds, removes, and re-schemas
+   a tool on a timer; prints each `ToolCatalog` snapshot as it arrives on
+   `catalogUpdates` (epoch, membership diff, fingerprint changes) and then
+   demonstrates call-time resolution — calling a tool that just vanished yields
+   the structured "no longer available" result. The live half of M8.
+
+(An MLX-backed variant — same bridge, xgrammar-constrained arguments — belongs
+to the packages that actually depend on MLX; see FoundationModelsMultitool.)
 
 Each example doubles as the acceptance demo for its milestone (`EchoTool` ↔ M4,
-`MLXConstrained` ↔ M0/M4, `ElicitingAgent` ↔ M7, `CatalogBrowser` ↔ M8).
+`ElicitingAgent` ↔ M7, `CatalogBrowser` + `DynamicToolset` ↔ M8).
 
 ## Milestones
 
-- [ ] **M0 — Scaffold.** SwiftPM package; depend on
-  `.product(name: "MCP", package: "swift-sdk")`, link `FoundationModels`, and
-  depend on `swissarmyhammer/mlx-swift-lm` (`MLXFoundationModels` — **mandatory**;
-  the schema-constrained model path). **Verify the pinned swift-sdk's supported
-  MCP protocol revision (target: 2025-11-25) and its elicitation surface.**
-  Decide module name(s). CI on macOS (Xcode for OS 27 SDK).
+- [ ] **M0 — Scaffold.** SwiftPM package with **exactly one external
+  dependency** — `.product(name: "MCP", package: "swift-sdk")` — plus the system
+  `FoundationModels` framework; nothing else (no MLX, no Router — see
+  Enforcement). **Verify the pinned swift-sdk's supported MCP protocol revision
+  (target: 2025-11-25) and its elicitation surface.** Decide module name(s). CI
+  on macOS (Xcode for OS 27 SDK).
 - [ ] **M1 — Schema translation.** `SchemaConverter` (`MCP.Value` →
   `GenerationSchema`) + the `GeneratedContent` ⇄ `MCP.Value` codec. Map JSON
   Schema constraints to runtime `GenerationGuide`s (enum/range/pattern/count) as
@@ -426,8 +448,9 @@ Each example doubles as the acceptance demo for its milestone (`EchoTool` ↔ M4
   `LanguageModelSession(mcp:)` convenience. Connection/transport setup stays with
   the SDK and the caller — we don't reimplement it.
 - [ ] **M4 — End-to-end.** A `LanguageModelSession` driven against a real local
-  MCP server (e.g. stdio filesystem/echo server) doing an actual tool call —
-  once with the system model, once with an `MLXLanguageModel`-backed session.
+  MCP server (e.g. stdio filesystem/echo server) doing an actual tool call, on
+  the system model. (Engine-level verification under an MLX-backed session
+  happens downstream where MLX is a dependency — Multitool/Router.)
 - [ ] **M5 — Hardening.** Cancellation (Swift task cancel → protocol
   `notifications/cancelled` so servers don't run orphaned work), per-call
   timeouts (reset by `notifications/progress`, which also surfaces to the host),
@@ -439,8 +462,8 @@ Each example doubles as the acceptance demo for its milestone (`EchoTool` ↔ M4
   transcript guidance applies (the *output* side, distinct from the
   constrained-decoding win on the *input* side).
 - [ ] **M6 — Examples.** Build the `Examples/` suite (see **Examples**):
-  `EchoTool`, `FileAssistant`, `MLXConstrained`, `ToolPicking`, `RemoteHTTP`,
-  `ElicitingAgent`, `CatalogBrowser` — each a runnable executable target
+  `EchoTool`, `FileAssistant`, `ToolPicking`, `RemoteHTTP`, `ElicitingAgent`,
+  `CatalogBrowser`, `DynamicToolset` — each a runnable executable target
   (`swift run <Name>`), compiled in CI. `EchoTool` and `FileAssistant` double
   as the human-facing E2E.
 - [ ] **M7 — Elicitation (both directions).** Declare the elicitation client
@@ -448,11 +471,15 @@ Each example doubles as the acceptance demo for its milestone (`EchoTool` ↔ M4
   `ElicitationCoordinator`; add `MCPElicitationTool` so the agent can elicit
   through the same coordinator. Handle `accept`/`decline`/`cancel`; keep secrets
   out of form mode (URL mode).
-- [ ] **M8 — Catalog surface for Multitool.** Freeze the public catalog API
-  (`MCPServer` → server identity, tool name, `title`, description, raw
-  `inputSchema`, `GenerationSchema`, `ToolAnnotations`, icons) that
-  FoundationModelsMultitool builds its search on; validate by consuming it from
-  a stub.
+- [ ] **M8 — Live catalog surface for Multitool.** Freeze the public catalog API
+  (`MCPServer` → stable server identity, tool name, `title`, description, raw
+  `inputSchema`, `GenerationSchema`, `ToolAnnotations`, icons) **plus its
+  dynamics**: `ToolCatalog` snapshots with epochs and per-tool fingerprints,
+  `catalogUpdates: AsyncStream<ToolCatalog>` (+ `diff(from:)` helper), coalesced
+  re-list on `tools/list_changed` and reconnect, and call-time `tool(named:)`
+  resolution with the structured not-found result. Validate with a stub consumer
+  driving an add / remove / same-name-schema-change sequence and asserting
+  epochs, fingerprints, and not-found behavior.
 
 ## Testing strategy
 
@@ -475,12 +502,17 @@ Each example doubles as the acceptance demo for its milestone (`EchoTool` ↔ M4
   surface); `SchemaConverter` targets the JSON Schema **2020-12** default dialect.
 - **Enforcement (decided):** the bridge never drives generation — it **declares**
   each tool's schema and the session's engine **enforces** it (Apple's guided
-  generation on the system model; xgrammar under an MLX-backed session). The
-  dependency on **`swissarmyhammer/mlx-swift-lm` is mandatory**
-  (`MLXFoundationModels` / `MLXGuidedGeneration`) so the schema-constrained model
-  path is always available. The **raw MCP `inputSchema` is exposed verbatim**
-  alongside the converted `GenerationSchema` as the integration point for
-  external constraint drivers (FoundationModelsMultitool).
+  generation on the system model; xgrammar under an MLX-backed session). **No
+  dependency on mlx-swift-lm or MLX**: the FoundationModels API is the seam, so
+  MLX-backed sessions work through the bridge unchanged, supplied by the host or
+  by Multitool via Router. *(Supersedes the earlier "mandatory mlx-swift-lm"
+  decision — a holdover from when this package hosted tool search and drove
+  constrained generation itself.)* This keeps the dependency set to **swift-sdk +
+  the system FoundationModels framework only**, removes the mlx-swift-lm
+  branch-pin from our release path, and eliminates the version diamond with
+  Router. The **raw MCP `inputSchema` is exposed verbatim** alongside the
+  converted `GenerationSchema` as the integration point for external constraint
+  drivers (FoundationModelsMultitool).
 - **Tool search is out of scope (decided):** this package **directly exposes
   tools** — no registry, no search tool, no generic call tool, no deferred
   surfacing. Tool search and dynamic surfacing live in
@@ -493,6 +525,24 @@ Each example doubles as the acceptance demo for its milestone (`EchoTool` ↔ M4
   for Multitool and host UIs. Annotations are **untrusted hints** per spec: the
   bridge never auto-retries or gates on them; hosts may (e.g. confirm
   destructive-hinted calls). **No search or UI/autocomplete code lives here.**
+- **Dynamic discovery (decided):** the catalog is a **stream of versioned
+  snapshots**, never transmitted deltas — snapshots are idempotent, so a missed
+  event costs nothing (a `diff(from:)` helper derives deltas locally). Each
+  snapshot carries a per-server **epoch** and per-tool **fingerprints** (hash of
+  name + raw `inputSchema` + annotations) so consumers detect the
+  same-name-changed-schema case, not just membership changes.
+  `tools/list_changed` notifications are **coalesced** into one re-list;
+  reconnect is an implicit re-list; readiness-state changes also emit.
+  Resolution is **call-time**: `tool(named:)` answers from the *current* catalog —
+  a vanished tool yields a structured "no longer available" result the model can
+  react to, and a schema-changed tool's call goes **through** (the server
+  validates; `isError` bubbles — fingerprints are advisory for consumer
+  indexing, never a gate). We define **no consumer protocol**: the surface is
+  plain `Sendable` values + `AsyncStream`, and consumers adapt it —
+  **FoundationModelsMultitool depends on this package directly** and takes
+  `Tool`s and `MCPServer`s (multiples of each) as sources, keying its merged
+  namespace on stable (server, tool) identity; a plain `Tool` is its trivial
+  static source and needs nothing from us.
 - **Transports (decided):** ship **stdio + HTTP** from the start
   (`StdioTransport` for local subprocess servers, `HTTPClientTransport` for
   remote/SSE), since swift-sdk provides both cheaply.
@@ -550,9 +600,10 @@ Each example doubles as the acceptance demo for its milestone (`EchoTool` ↔ M4
    numeric guides are `Decimal` (clean JSON integer/number → `Decimal`),
    exclusive vs. inclusive bounds (`exclusiveMinimum` → epsilon/round,
    documented), and count-guide behavior on nested arrays. Enforcement inside
-   Apple's closed decoder can't be inspected — the MLX-backed session (mandatory
-   `mlx-swift-lm` dependency) is the independent, testable enforcement path,
-   and the raw-`inputSchema` catalog gives external drivers the same escape.
+   Apple's closed decoder can't be inspected — an MLX-backed session (xgrammar;
+   no dependency here) is the independent, testable enforcement path, exercised
+   downstream where MLX is a dependency, and the raw-`inputSchema` catalog gives
+   external drivers the same escape.
 4. ✅ **Agent-elicitation arg shape — decided: full `requestedSchema`.**
    `MCPElicitationTool` takes `{ message, requestedSchema }` and the **model
    generates the flat-primitive `requestedSchema` itself, constrained** (mirrors
@@ -609,8 +660,9 @@ learn from it, not adopt it.
 - MCP elicitation (2025-11-25) —
   https://modelcontextprotocol.io/specification/2025-11-25/client/elicitation
 - MCP Swift SDK — https://github.com/modelcontextprotocol/swift-sdk
-- mlx-swift-lm (**mandatory dependency** — `MLXFoundationModels` /
-  `MLXGuidedGeneration`, the xgrammar schema-constrained model path) —
+- mlx-swift-lm (`MLXFoundationModels` / `MLXGuidedGeneration` — the xgrammar
+  schema-constrained model path; **not a dependency of this package**, used
+  downstream via Router/Multitool) —
   https://github.com/swissarmyhammer/mlx-swift-lm
 - FoundationModelsMultitool (sibling pkg — tool search / dynamic surfacing, built
   on this package's catalog) —
