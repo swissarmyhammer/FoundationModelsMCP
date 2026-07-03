@@ -184,20 +184,16 @@ public enum SchemaConverter {
             )
         }
 
-        switch fields["type"]?.stringValue {
+        let typeString = fields["type"]?.stringValue
+        switch typeString {
         case "object":
             return parseObject(fields, name: name)
-        case "string":
-            return .string
-        case "integer":
-            return .integer
-        case "number":
-            return .number
-        case "boolean":
-            return .boolean
         case "array":
             return parseArray(fields, name: name)
         default:
+            if let primitive = typeString.flatMap(primitiveSchemaIR) {
+                return primitive
+            }
             // No recognized `type`, but shaped like an object (e.g. a root
             // `inputSchema` that omits `"type": "object"`, which the MCP
             // spec still treats as an object schema).
@@ -205,6 +201,20 @@ public enum SchemaConverter {
                 return parseObject(fields, name: name)
             }
             return .unknown
+        }
+    }
+
+    /// Maps a JSON Schema primitive `type` string to its `SchemaIR` case.
+    ///
+    /// - Parameter typeString: The JSON Schema `type` keyword's string value.
+    /// - Returns: The matching primitive `SchemaIR` case, or `nil` if `typeString` is not one of `"string"`, `"integer"`, `"number"`, or `"boolean"`.
+    private static func primitiveSchemaIR(_ typeString: String) -> SchemaIR? {
+        switch typeString {
+        case "string": return .string
+        case "integer": return .integer
+        case "number": return .number
+        case "boolean": return .boolean
+        default: return nil
         }
     }
 
@@ -269,11 +279,19 @@ public enum SchemaConverter {
     private static func scalarString(_ value: Value) -> String? {
         switch value {
         case .string(let string): return string
-        case .int(let int): return String(int)
-        case .double(let double): return String(double)
-        case .bool(let bool): return String(bool)
+        case .int(let int): return numericScalarString(int)
+        case .double(let double): return numericScalarString(double)
+        case .bool(let bool): return numericScalarString(bool)
         default: return nil
         }
+    }
+
+    /// Renders a numeric or boolean `enum` scalar to its default string form.
+    ///
+    /// - Parameter scalar: The numeric or boolean value to stringify.
+    /// - Returns: The value's default string representation.
+    private static func numericScalarString(_ scalar: some CustomStringConvertible) -> String {
+        String(describing: scalar)
     }
 
     /// MCP 2025-11-25 targets JSON Schema 2020-12, whose default `$ref` anchor for a top-level `$defs` entry is `#/$defs/<name>`; the legacy `#/definitions/<name>` form (see `definitionsContainerKeys`) is recognized alongside it.
@@ -312,13 +330,13 @@ public enum SchemaConverter {
                 }
             )
         case .string:
-            return DynamicGenerationSchema(type: String.self)
+            return primitiveSchema(String.self)
         case .integer:
-            return DynamicGenerationSchema(type: Int.self)
+            return primitiveSchema(Int.self)
         case .number:
-            return DynamicGenerationSchema(type: Double.self)
+            return primitiveSchema(Double.self)
         case .boolean:
-            return DynamicGenerationSchema(type: Bool.self)
+            return primitiveSchema(Bool.self)
         case .array(let items):
             return DynamicGenerationSchema(arrayOf: dynamicSchema(for: items))
         case .enumeration(let name, let description, let values):
@@ -326,7 +344,16 @@ public enum SchemaConverter {
         case .reference(let name):
             return DynamicGenerationSchema(referenceTo: name)
         case .unknown:
-            return DynamicGenerationSchema(type: String.self)
+            // Degrades to a permissive string schema — see `SchemaIR.unknown`.
+            return primitiveSchema(String.self)
         }
+    }
+
+    /// Builds a `DynamicGenerationSchema` for a `Generable` primitive Swift type.
+    ///
+    /// - Parameter type: The primitive Swift type (`String`, `Int`, `Double`, or `Bool`) to build a schema for.
+    /// - Returns: The equivalent `DynamicGenerationSchema`.
+    private static func primitiveSchema<Primitive: Generable>(_ type: Primitive.Type) -> DynamicGenerationSchema {
+        DynamicGenerationSchema(type: type)
     }
 }
