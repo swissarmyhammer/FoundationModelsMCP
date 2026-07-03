@@ -120,7 +120,7 @@ public enum SchemaConverter {
     ///     name — used as the emitted `DynamicGenerationSchema`'s type name.
     /// - Returns: The parsed root schema plus any resolved `$defs`.
     public static func parse(_ inputSchema: Value, name: String) -> SchemaConversion {
-        guard case let .object(fields) = inputSchema else {
+        guard case .object(let fields) = inputSchema else {
             return SchemaConversion(name: name, root: .unknown, definitions: [:])
         }
         let definitions = parseDefinitions(fields)
@@ -135,6 +135,7 @@ public enum SchemaConverter {
     /// `DynamicGenerationSchema` values and hands them to
     /// `GenerationSchema.init(root:dependencies:)`.
     ///
+    /// - Returns: A `GenerationSchema` representing the converted schema.
     /// - Throws: `GenerationSchema.SchemaError` if the parsed schemas
     ///   describe an invalid type graph (e.g. a `$ref` with no matching
     ///   `$defs` entry, or a duplicate type name).
@@ -155,10 +156,14 @@ public enum SchemaConverter {
     /// resolves instead of silently degrading to `.unknown`.
     private static let definitionsContainerKeys = ["$defs", "definitions"]
 
+    /// The JSON Schema `description` keyword, used as a dictionary key when
+    /// pulling a node's description out of its raw `Value` fields.
+    private static let descriptionKey = "description"
+
     private static func parseDefinitions(_ fields: [String: Value]) -> [String: SchemaIR] {
         var result: [String: SchemaIR] = [:]
         for containerKey in definitionsContainerKeys {
-            guard case let .object(defs)? = fields[containerKey] else { continue }
+            guard case .object(let defs)? = fields[containerKey] else { continue }
             for (defName, defValue) in defs {
                 result[defName] = parseNode(defValue, name: defName)
             }
@@ -167,16 +172,16 @@ public enum SchemaConverter {
     }
 
     private static func parseNode(_ value: Value, name: String) -> SchemaIR {
-        guard case let .object(fields) = value else { return .unknown }
+        guard case .object(let fields) = value else { return .unknown }
 
-        if case let .string(ref)? = fields["$ref"], let defName = definitionName(fromRef: ref) {
+        if case .string(let ref)? = fields["$ref"], let defName = definitionName(fromRef: ref) {
             return .reference(name: defName)
         }
 
-        if case let .array(enumValues)? = fields["enum"] {
+        if case .array(let enumValues)? = fields["enum"] {
             return .enumeration(
                 name: name,
-                description: fields["description"]?.stringValue,
+                description: fields[descriptionKey]?.stringValue,
                 values: enumValues.compactMap(scalarString)
             )
         }
@@ -207,18 +212,18 @@ public enum SchemaConverter {
 
     private static func parseObject(_ fields: [String: Value], name: String) -> SchemaIR {
         let requiredNames: Set<String>
-        if case let .array(requiredValues)? = fields["required"] {
+        if case .array(let requiredValues)? = fields["required"] {
             requiredNames = Set(requiredValues.compactMap(\.stringValue))
         } else {
             requiredNames = []
         }
 
         var properties: [SchemaIR.Property] = []
-        if case let .object(propertyFields)? = fields["properties"] {
+        if case .object(let propertyFields)? = fields["properties"] {
             for (propertyName, propertySchema) in propertyFields.sorted(by: { $0.key < $1.key }) {
                 let description: String?
-                if case let .object(propertySchemaFields) = propertySchema {
-                    description = propertySchemaFields["description"]?.stringValue
+                if case .object(let propertySchemaFields) = propertySchema {
+                    description = propertySchemaFields[descriptionKey]?.stringValue
                 } else {
                     description = nil
                 }
@@ -235,7 +240,7 @@ public enum SchemaConverter {
 
         return .object(
             name: name,
-            description: fields["description"]?.stringValue,
+            description: fields[descriptionKey]?.stringValue,
             properties: properties
         )
     }
@@ -277,7 +282,7 @@ public enum SchemaConverter {
 
     private static func dynamicSchema(for node: SchemaIR) -> DynamicGenerationSchema {
         switch node {
-        case let .object(name, description, properties):
+        case .object(let name, let description, let properties):
             return DynamicGenerationSchema(
                 name: name,
                 description: description,
@@ -298,11 +303,11 @@ public enum SchemaConverter {
             return DynamicGenerationSchema(type: Double.self)
         case .boolean:
             return DynamicGenerationSchema(type: Bool.self)
-        case let .array(items):
+        case .array(let items):
             return DynamicGenerationSchema(arrayOf: dynamicSchema(for: items))
-        case let .enumeration(name, description, values):
+        case .enumeration(let name, let description, let values):
             return DynamicGenerationSchema(name: name, description: description, anyOf: values)
-        case let .reference(name):
+        case .reference(let name):
             return DynamicGenerationSchema(referenceTo: name)
         case .unknown:
             return DynamicGenerationSchema(type: String.self)
