@@ -54,8 +54,18 @@ extension ScriptedServer {
     @discardableResult
     public func addFilesystemTools(initialFiles: [String: String] = [:]) -> VirtualFilesystem {
         let filesystem = VirtualFilesystem(initialFiles: initialFiles)
+        addListFilesTool(filesystem: filesystem)
+        addReadFileTool(filesystem: filesystem)
+        addWriteFileTool(filesystem: filesystem)
+        return filesystem
+    }
 
-        addFilesystemTool(
+    /// Registers `list_files`, listing every path currently stored in
+    /// `filesystem`.
+    ///
+    /// - Parameter filesystem: The backing virtual filesystem.
+    private func addListFilesTool(filesystem: VirtualFilesystem) {
+        addScriptedTool(
             name: "list_files",
             description: "Lists every path in the virtual filesystem.",
             inputSchema: JSONSchemaBuilder.emptySchema
@@ -67,8 +77,13 @@ extension ScriptedServer {
                 ]
             )
         }
+    }
 
-        addFilesystemTool(
+    /// Registers `read_file`, reading one file's content from `filesystem`.
+    ///
+    /// - Parameter filesystem: The backing virtual filesystem.
+    private func addReadFileTool(filesystem: VirtualFilesystem) {
+        addScriptedTool(
             name: "read_file",
             description: "Reads one file's content from the virtual filesystem.",
             inputSchema: JSONSchemaBuilder.object(
@@ -88,8 +103,14 @@ extension ScriptedServer {
             return CallTool.Result(
                 content: [.text(text: content, annotations: nil, _meta: nil)])
         }
+    }
 
-        addFilesystemTool(
+    /// Registers `write_file`, writing (creating or overwriting) one file in
+    /// `filesystem`.
+    ///
+    /// - Parameter filesystem: The backing virtual filesystem.
+    private func addWriteFileTool(filesystem: VirtualFilesystem) {
+        addScriptedTool(
             name: "write_file",
             description: "Writes (creating or overwriting) one file in the virtual filesystem.",
             inputSchema: JSONSchemaBuilder.object(
@@ -110,31 +131,5 @@ extension ScriptedServer {
             return CallTool.Result(
                 content: [.text(text: "wrote \(path)", annotations: nil, _meta: nil)])
         }
-
-        return filesystem
-    }
-
-    /// Builds an `MCP.Tool` from `name`, `description`, and `inputSchema` and
-    /// registers it with `handler` — the shared plumbing behind each of the
-    /// filesystem-style tools in ``addFilesystemTools(initialFiles:)``, so
-    /// each tool only spells out what's actually different about it.
-    ///
-    /// - Parameters:
-    ///   - name: The tool's name.
-    ///   - description: The tool's human-readable description.
-    ///   - inputSchema: The tool's input JSON Schema.
-    ///   - handler: The closure that answers `tools/call` for this tool.
-    private func addFilesystemTool(
-        name: String,
-        description: String,
-        inputSchema: Value,
-        handler: @escaping @Sendable (CallTool.Parameters) async throws -> CallTool.Result
-    ) {
-        addTool(
-            ScriptedTool(
-                definition: MCP.Tool(name: name, description: description, inputSchema: inputSchema),
-                handler: handler
-            )
-        )
     }
 }

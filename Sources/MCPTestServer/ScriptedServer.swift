@@ -186,6 +186,33 @@ public actor ScriptedServer {
         }
     }
 
+    /// Builds an `MCP.Tool` from `name`, `description`, and `inputSchema` and
+    /// registers it with `handler` — the shared plumbing behind every
+    /// individually-scripted tool (the filesystem-style tools in
+    /// `FilesystemToolKit.swift`, ``addProgressReportingTool(named:totalSteps:stepDelay:)``,
+    /// ``addElicitingTool(named:message:requestedSchema:)``, and
+    /// ``addTransportDroppingTool(named:)``), so each call site only spells
+    /// out what's actually different about its tool.
+    ///
+    /// - Parameters:
+    ///   - name: The tool's name.
+    ///   - description: The tool's human-readable description.
+    ///   - inputSchema: The tool's input JSON Schema.
+    ///   - handler: The closure that answers `tools/call` for this tool.
+    func addScriptedTool(
+        name: String,
+        description: String,
+        inputSchema: Value,
+        handler: @escaping @Sendable (CallTool.Parameters) async throws -> CallTool.Result
+    ) {
+        addTool(
+            ScriptedTool(
+                definition: MCP.Tool(name: name, description: description, inputSchema: inputSchema),
+                handler: handler
+            )
+        )
+    }
+
     /// Schedules a mutation (``addTool(_:)``, ``removeTool(named:)``,
     /// ``replaceTool(_:)``, or any combination) to run after `delay` — the
     /// "on a timer" half of scenario 5.
@@ -265,13 +292,11 @@ public actor ScriptedServer {
         totalSteps: Int,
         stepDelay: Duration
     ) {
-        let definition = MCP.Tool(
+        addScriptedTool(
             name: name,
             description: "Reports progress over \(totalSteps) steps before completing.",
             inputSchema: JSONSchemaBuilder.emptySchema
-        )
-        let handler: @Sendable (CallTool.Parameters) async throws -> CallTool.Result = {
-            [weak self] params in
+        ) { [weak self] params in
             try await Self.withResolvedSelf(self) { instance in
                 if let token = params._meta?.progressToken {
                     for step in 1...totalSteps {
@@ -288,7 +313,6 @@ public actor ScriptedServer {
                 return CallTool.Result(content: [.text(text: "done", annotations: nil, _meta: nil)])
             }
         }
-        addTool(ScriptedTool(definition: definition, handler: handler))
     }
 
     // MARK: - Elicitation (scenario 8)
@@ -306,13 +330,11 @@ public actor ScriptedServer {
         message: String,
         requestedSchema: Elicitation.RequestSchema
     ) {
-        let definition = MCP.Tool(
+        addScriptedTool(
             name: name,
             description: "Elicits user input mid-call and echoes it back.",
             inputSchema: JSONSchemaBuilder.emptySchema
-        )
-        let handler: @Sendable (CallTool.Parameters) async throws -> CallTool.Result = {
-            [weak self] _ in
+        ) { [weak self] _ in
             try await Self.withResolvedSelf(self) { instance in
                 let result = try await instance.server.requestElicitation(
                     message: message, requestedSchema: requestedSchema)
@@ -327,7 +349,6 @@ public actor ScriptedServer {
                 )
             }
         }
-        addTool(ScriptedTool(definition: definition, handler: handler))
     }
 
     // MARK: - Transport drop mid-call (scenario 7)
@@ -340,19 +361,16 @@ public actor ScriptedServer {
     ///
     /// - Parameter name: The tool's name.
     public func addTransportDroppingTool(named name: String) {
-        let definition = MCP.Tool(
+        addScriptedTool(
             name: name,
             description: "Drops the transport connection mid-call.",
             inputSchema: JSONSchemaBuilder.emptySchema
-        )
-        let handler: @Sendable (CallTool.Parameters) async throws -> CallTool.Result = {
-            [weak self] _ in
+        ) { [weak self] _ in
             try await Self.withResolvedSelf(self) { instance in
                 await instance.dropTransport()
                 throw MCPError.connectionClosed
             }
         }
-        addTool(ScriptedTool(definition: definition, handler: handler))
     }
 
     // MARK: - Recorded notifications (scenario 10)
