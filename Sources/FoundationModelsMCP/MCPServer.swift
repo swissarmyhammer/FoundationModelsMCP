@@ -147,6 +147,13 @@ public actor MCPServer {
     /// site instead of being repeated as a string literal.
     private static let serverMetadataKey = "server"
 
+    /// The structured-logging metadata key naming the error a log message
+    /// concerns — every ``logger`` call in this type that logs a caught
+    /// error keys its `String(describing:)` under this constant, so the key
+    /// name stays consistent (and changeable in one place) across every call
+    /// site instead of being repeated as a string literal.
+    private static let errorMetadataKey = "error"
+
     /// The wrapped swift-sdk client this actor owns for its whole lifetime.
     private let client: MCP.Client
 
@@ -349,7 +356,7 @@ public actor MCPServer {
                         Self.serverMetadataKey: "\(identityNameForDiagnostics)",
                         "attempt": "\(attempt)",
                         "maxAttempts": "\(backoffPolicy.maxAttempts)",
-                        "error": "\(error)",
+                        Self.errorMetadataKey: "\(error)",
                     ])
                 guard attempt < backoffPolicy.maxAttempts else { break }
                 let delay = Self.backoffDelay(afterAttempt: attempt, policy: backoffPolicy)
@@ -404,7 +411,7 @@ public actor MCPServer {
         } catch {
             logger.warning(
                 "MCPServer mid-call transport fault",
-                metadata: [Self.serverMetadataKey: "\(identityNameForDiagnostics)", "tool": "\(name)", "error": "\(error)"])
+                metadata: [Self.serverMetadataKey: "\(identityNameForDiagnostics)", "tool": "\(name)", Self.errorMetadataKey: "\(error)"])
             state = .faulted(String(describing: error))
             await reconnectAfterFault()
             return ToolContentRenderer.render(result: Self.faultResult(for: error))
@@ -434,7 +441,7 @@ public actor MCPServer {
         } catch {
             logger.error(
                 "MCPServer auto-reconnect after mid-call fault failed",
-                metadata: [Self.serverMetadataKey: "\(identityNameForDiagnostics)", "error": "\(error)"])
+                metadata: [Self.serverMetadataKey: "\(identityNameForDiagnostics)", Self.errorMetadataKey: "\(error)"])
         }
     }
 
@@ -566,7 +573,7 @@ public actor MCPServer {
             guard generation == connectGeneration else {
                 logger.warning(
                     "MCPServer discarding a stale connect failure — a newer attempt has since started",
-                    metadata: [Self.serverMetadataKey: "\(identityNameForDiagnostics)", "error": "\(error)"])
+                    metadata: [Self.serverMetadataKey: "\(identityNameForDiagnostics)", Self.errorMetadataKey: "\(error)"])
                 throw error
             }
             state = .faulted(String(describing: error))
