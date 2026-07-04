@@ -52,78 +52,86 @@ extension ScriptedServer {
     public func addFilesystemTools(initialFiles: [String: String] = [:]) -> VirtualFilesystem {
         let filesystem = VirtualFilesystem(initialFiles: initialFiles)
 
-        addTool(
-            ScriptedTool(
-                definition: MCP.Tool(
-                    name: "list_files",
-                    description: "Lists every path in the virtual filesystem.",
-                    inputSchema: JSONSchemaBuilder.object(properties: [:])
-                ),
-                handler: { _ in
-                    let paths = await filesystem.listPaths()
-                    return CallTool.Result(
-                        content: [
-                            .text(text: paths.joined(separator: "\n"), annotations: nil, _meta: nil)
-                        ]
-                    )
-                }
+        addFilesystemTool(
+            name: "list_files",
+            description: "Lists every path in the virtual filesystem.",
+            inputSchema: JSONSchemaBuilder.object(properties: [:])
+        ) { _ in
+            let paths = await filesystem.listPaths()
+            return CallTool.Result(
+                content: [
+                    .text(text: paths.joined(separator: "\n"), annotations: nil, _meta: nil)
+                ]
             )
-        )
+        }
 
-        addTool(
-            ScriptedTool(
-                definition: MCP.Tool(
-                    name: "read_file",
-                    description: "Reads one file's content from the virtual filesystem.",
-                    inputSchema: JSONSchemaBuilder.object(
-                        properties: ["path": JSONSchemaBuilder.string()], required: ["path"])
-                ),
-                handler: { params in
-                    guard let path = params.arguments?["path"]?.stringValue else {
-                        throw MCPError.invalidParams("read_file requires a \"path\" argument")
-                    }
-                    guard let content = await filesystem.read(path: path) else {
-                        return CallTool.Result(
-                            content: [
-                                .text(text: "No such file: \(path)", annotations: nil, _meta: nil)
-                            ],
-                            isError: true
-                        )
-                    }
-                    return CallTool.Result(
-                        content: [.text(text: content, annotations: nil, _meta: nil)])
-                }
-            )
-        )
+        addFilesystemTool(
+            name: "read_file",
+            description: "Reads one file's content from the virtual filesystem.",
+            inputSchema: JSONSchemaBuilder.object(
+                properties: ["path": JSONSchemaBuilder.string()], required: ["path"])
+        ) { params in
+            guard let path = params.arguments?["path"]?.stringValue else {
+                throw MCPError.invalidParams("read_file requires a \"path\" argument")
+            }
+            guard let content = await filesystem.read(path: path) else {
+                return CallTool.Result(
+                    content: [
+                        .text(text: "No such file: \(path)", annotations: nil, _meta: nil)
+                    ],
+                    isError: true
+                )
+            }
+            return CallTool.Result(
+                content: [.text(text: content, annotations: nil, _meta: nil)])
+        }
 
-        addTool(
-            ScriptedTool(
-                definition: MCP.Tool(
-                    name: "write_file",
-                    description:
-                        "Writes (creating or overwriting) one file in the virtual filesystem.",
-                    inputSchema: JSONSchemaBuilder.object(
-                        properties: [
-                            "path": JSONSchemaBuilder.string(),
-                            "content": JSONSchemaBuilder.string(),
-                        ],
-                        required: ["path", "content"]
-                    )
-                ),
-                handler: { params in
-                    guard let path = params.arguments?["path"]?.stringValue,
-                        let content = params.arguments?["content"]?.stringValue
-                    else {
-                        throw MCPError.invalidParams(
-                            "write_file requires \"path\" and \"content\" arguments")
-                    }
-                    await filesystem.write(path: path, content: content)
-                    return CallTool.Result(
-                        content: [.text(text: "wrote \(path)", annotations: nil, _meta: nil)])
-                }
+        addFilesystemTool(
+            name: "write_file",
+            description: "Writes (creating or overwriting) one file in the virtual filesystem.",
+            inputSchema: JSONSchemaBuilder.object(
+                properties: [
+                    "path": JSONSchemaBuilder.string(),
+                    "content": JSONSchemaBuilder.string(),
+                ],
+                required: ["path", "content"]
             )
-        )
+        ) { params in
+            guard let path = params.arguments?["path"]?.stringValue,
+                let content = params.arguments?["content"]?.stringValue
+            else {
+                throw MCPError.invalidParams(
+                    "write_file requires \"path\" and \"content\" arguments")
+            }
+            await filesystem.write(path: path, content: content)
+            return CallTool.Result(
+                content: [.text(text: "wrote \(path)", annotations: nil, _meta: nil)])
+        }
 
         return filesystem
+    }
+
+    /// Builds an `MCP.Tool` from `name`, `description`, and `inputSchema` and
+    /// registers it with `handler` — the shared plumbing behind each of the
+    /// filesystem-style tools in ``addFilesystemTools(initialFiles:)``, so
+    /// each tool only spells out what's actually different about it.
+    ///
+    /// - Parameters:
+    ///   - name: The tool's name.
+    ///   - description: The tool's human-readable description.
+    ///   - inputSchema: The tool's input JSON Schema.
+    ///   - handler: The closure that answers `tools/call` for this tool.
+    private func addFilesystemTool(
+        name: String,
+        description: String,
+        inputSchema: Value,
+        handler: @escaping @Sendable (CallTool.Parameters) async throws -> CallTool.Result
+    ) {
+        addTool(
+            ScriptedTool(
+                definition: MCP.Tool(name: name, description: description, inputSchema: inputSchema),
+                handler: handler
+            )
+        )
     }
 }

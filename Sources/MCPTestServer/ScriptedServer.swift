@@ -25,6 +25,11 @@ import MCP
 /// `Tests/FoundationModelsMCPTests/PackageDependencyTests.swift`, which
 /// asserts that from `Package.swift`'s source.
 public actor ScriptedServer {
+    /// The error message thrown when a method handler's weak `self` capture
+    /// has already been deallocated — shared so every such guard reports the
+    /// same wording.
+    private static let deallocatedErrorMessage = "ScriptedServer deallocated"
+
     /// The wrapped swift-sdk server that actually speaks the MCP protocol.
     private let server: MCP.Server
 
@@ -99,12 +104,12 @@ public actor ScriptedServer {
 
     private func registerHandlers() async {
         await server.withMethodHandler(ListTools.self) { [weak self] params in
-            guard let self else { throw MCPError.internalError("ScriptedServer deallocated") }
+            guard let self else { throw MCPError.internalError(Self.deallocatedErrorMessage) }
             return await self.listToolsPage(cursor: params.cursor)
         }
 
         await server.withMethodHandler(CallTool.self) { [weak self] params in
-            guard let self else { throw MCPError.internalError("ScriptedServer deallocated") }
+            guard let self else { throw MCPError.internalError(Self.deallocatedErrorMessage) }
             return try await self.dispatchCallTool(params)
         }
 
@@ -233,7 +238,7 @@ public actor ScriptedServer {
         )
         let handler: @Sendable (CallTool.Parameters) async throws -> CallTool.Result = {
             [weak self] params in
-            guard let self else { throw MCPError.internalError("ScriptedServer deallocated") }
+            guard let self else { throw MCPError.internalError(Self.deallocatedErrorMessage) }
             if let token = params._meta?.progressToken {
                 for step in 1...totalSteps {
                     try await self.sendProgress(
@@ -241,7 +246,7 @@ public actor ScriptedServer {
                     try await Task.sleep(for: stepDelay)
                 }
             } else {
-                try await Task.sleep(for: stepDelay.scaled(by: totalSteps))
+                try await Task.sleep(for: stepDelay * totalSteps)
             }
             return CallTool.Result(content: [.text(text: "done", annotations: nil, _meta: nil)])
         }
@@ -276,8 +281,8 @@ public actor ScriptedServer {
         )
         let handler: @Sendable (CallTool.Parameters) async throws -> CallTool.Result = {
             [weak self] _ in
-            guard let self else { throw MCPError.internalError("ScriptedServer deallocated") }
-            let result = try await self.requestElicitation(
+            guard let self else { throw MCPError.internalError(Self.deallocatedErrorMessage) }
+            let result = try await self.server.requestElicitation(
                 message: message, requestedSchema: requestedSchema)
             let structuredContent: Value? = result.content.map(Value.object)
             return CallTool.Result(
@@ -289,12 +294,6 @@ public actor ScriptedServer {
             )
         }
         addTool(ScriptedTool(definition: definition, handler: handler))
-    }
-
-    private func requestElicitation(
-        message: String, requestedSchema: Elicitation.RequestSchema
-    ) async throws -> CreateElicitation.Result {
-        try await server.requestElicitation(message: message, requestedSchema: requestedSchema)
     }
 
     // MARK: - Transport drop mid-call (scenario 7)
@@ -314,7 +313,7 @@ public actor ScriptedServer {
         )
         let handler: @Sendable (CallTool.Parameters) async throws -> CallTool.Result = {
             [weak self] _ in
-            guard let self else { throw MCPError.internalError("ScriptedServer deallocated") }
+            guard let self else { throw MCPError.internalError(Self.deallocatedErrorMessage) }
             await self.dropTransport()
             throw MCPError.connectionClosed
         }
@@ -369,14 +368,4 @@ public struct RecordedNotification: Sendable, Equatable {
     /// The human-readable cancellation reason, if the notification carried
     /// one.
     public let reason: String?
-}
-
-extension Duration {
-    /// Multiplies a duration by an integer factor.
-    ///
-    /// - Parameter factor: The non-negative multiplier.
-    /// - Returns: This duration repeated `factor` times.
-    fileprivate func scaled(by factor: Int) -> Duration {
-        self * factor
-    }
 }

@@ -30,28 +30,29 @@ comments:
 
     Leaving task in `doing` per /implement process — ready for /review.
   timestamp: 2026-07-04T14:54:33.705445+00:00
+- actor: claude-code
+  id: 01kwpv5yf1r7k8f4d5f5n1p659
+  text: |-
+    Addressed all 10 review findings:
+
+    1. Sources/MCPTestServer/FilesystemToolKit.swift — extracted private `addFilesystemTool(name:description:inputSchema:handler:)` helper; `addFilesystemTools` now delegates to it 3x instead of repeating the `addTool(ScriptedTool(definition: MCP.Tool(...), handler:...))` structure inline.
+    2-3. Sources/MCPTestServer/FlakyConnectTransport.swift — added doc comments to `disconnect()` and `send(_:)` explaining each delegates to the wrapped transport.
+    4-5,7,9,10. Sources/MCPTestServer/ScriptedServer.swift — added `private static let deallocatedErrorMessage = "ScriptedServer deallocated"` and replaced all 5 occurrences of the literal (registerHandlers x2, addProgressReportingTool, addElicitingTool, addTransportDroppingTool) with `Self.deallocatedErrorMessage`.
+    6. Removed the private `requestElicitation(message:requestedSchema:)` wrapper (single call site); inlined as `self.server.requestElicitation(message:requestedSchema:)` directly in `addElicitingTool`'s handler.
+    8. Removed the fileprivate `Duration.scaled(by:)` extension (single call site); inlined as `stepDelay * totalSteps` in `addProgressReportingTool`'s handler.
+
+    Verification (fresh, this session):
+    - `swift build` — clean, zero warnings
+    - `swift test` — 113/113 tests passed across 10 suites
+
+    Adversarial double-check (subagent, independent `git diff` read + own build/test re-run): PASS. Confirmed all three filesystem tools byte-identical after extraction, doc comments accurate, no stray references to the removed private method/extension anywhere in Sources/ or Tests/, `self.server.requestElicitation(...)` call matches the vendored SDK signature, `stepDelay * totalSteps` semantically identical to the removed `scaled(by:)`.
+
+    Leaving task in `doing` per /implement process — ready for /review.
+  timestamp: 2026-07-04T15:15:31.937310+00:00
 depends_on:
 - 01KWMRYGMXC08VX2W7P2DK2X0W
 position_column: doing
 position_ordinal: '80'
 title: 'Test fixture: ScriptedServer utility target with full scenario scripting'
 ---
-## What
-Create `MCPTestServer` — a **dedicated non-shipped utility target** (internal library + small executable wrapper), usable by BOTH the test target and the `Examples/` executables (never a dependency of the `FoundationModelsMCP` library product). It is a scriptable MCP server with modes/commands for every scenario downstream tasks test: (1) echo tool; (2) filesystem-style multi-tool mode; (3) `tools/list` paginated across N pages (`nextCursor`); (4) `tools/list_changed` emission on command (including rapid bursts); (5) add/remove/re-schema tools on command or timer; (6) **fail-N-times-then-succeed connects** (scripted connect-failure count); (7) transport drop mid-call on command; (8) a tool that **elicits mid-call** (`elicitation/create`) with scripted expectations; (9) periodic **`notifications/progress`** emission during a long call; (10) **records inbound notifications** (esp. `notifications/cancelled`) for test assertion.
-
-- [ ] Utility target wired for tests + Examples, excluded from library product
-- [ ] Scenarios 1–5 (tools, pagination, list_changed, mutation)
-- [ ] Scenarios 6–7 (connect-failure count, mid-call drop)
-- [ ] Scenarios 8–10 (elicit-on-command, progress emission, inbound-notification recording)
-
-## Acceptance Criteria
-- [ ] Library product's dependency closure does NOT include MCPTestServer (asserted by a Package.swift check in CI)
-- [ ] Each scripted scenario is driveable from a test and observable (self-tests below)
-- [ ] Usable both in-process (tests) and as a spawned stdio subprocess (Examples/E2E)
-
-## Tests
-- [ ] `Tests/FoundationModelsMCPTests/ScriptedServerSelfTests.swift`: one self-test per scenario 3–10 proving the scripting works (pagination page count, burst emission, connect-failure countdown, elicit round-trip, progress cadence, cancelled-notification recording)
-- [ ] `swift test --filter ScriptedServerSelf` green
-
-## Workflow
-- Use `/tdd` — write failing tests first, then implement to make them pass.
+## What\nCreate `MCPTestServer` — a **dedicated non-shipped utility target** (internal library + small executable wrapper), usable by BOTH the test target and the `Examples/` executables (never a dependency of the `FoundationModelsMCP` library product). It is a scriptable MCP server with modes/commands for every scenario downstream tasks test: (1) echo tool; (2) filesystem-style multi-tool mode; (3) `tools/list` paginated across N pages (`nextCursor`); (4) `tools/list_changed` emission on command (including rapid bursts); (5) add/remove/re-schema tools on command or timer; (6) **fail-N-times-then-succeed connects** (scripted connect-failure count); (7) transport drop mid-call on command; (8) a tool that **elicits mid-call** (`elicitation/create`) with scripted expectations; (9) periodic **`notifications/progress`** emission during a long call; (10) **records inbound notifications** (esp. `notifications/cancelled`) for test assertion.\n\n- [x] Utility target wired for tests + Examples, excluded from library product\n- [x] Scenarios 1–5 (tools, pagination, list_changed, mutation)\n- [x] Scenarios 6–7 (connect-failure count, mid-call drop)\n- [x] Scenarios 8–10 (elicit-on-command, progress emission, inbound-notification recording)\n\n## Acceptance Criteria\n- [x] Library product's dependency closure does NOT include MCPTestServer (asserted by a Package.swift check in CI)\n- [x] Each scripted scenario is driveable from a test and observable (self-tests below)\n- [x] Usable both in-process (tests) and as a spawned stdio subprocess (Examples/E2E)\n\n## Tests\n- [x] `Tests/FoundationModelsMCPTests/ScriptedServerSelfTests.swift`: one self-test per scenario 3–10 proving the scripting works (pagination page count, burst emission, connect-failure countdown, elicit round-trip, progress cadence, cancelled-notification recording)\n- [x] `swift test --filter ScriptedServerSelf` green\n\n## Workflow\n- Use `/tdd` — write failing tests first, then implement to make them pass.\n\n## Review Findings (2026-07-04 10:00)\n\n- [x] `Sources/MCPTestServer/FilesystemToolKit.swift:59` — Function addFilesystemTools is approximately 74 lines of actual code (excluding 4 blank lines), exceeding the ~50 line guideline. The function registers three similar tools with repetitive structure—each with an MCP.Tool definition and handler closure—making it harder to read and maintain. Extract a helper method to construct and register filesystem tools, reducing repetition. For example: `private func addFilesystemTool(name: String, handler: …) { addTool(ScriptedTool(definition: …, handler: handler)) }`, or move each tool's handler into a named function rather than inline closures.\n- [x] `Sources/MCPTestServer/FlakyConnectTransport.swift:82` — Public function `disconnect()` lacks documentation. It's part of the Transport protocol interface and should explain its behavior (delegates to wrapped transport). Add a documentation comment explaining that this delegates the disconnect to the wrapped transport. Example: `/// Delegates the disconnect to the wrapped transport.`.\n- [x] `Sources/MCPTestServer/FlakyConnectTransport.swift:86` — Public function `send(_:)` lacks documentation. It's part of the Transport protocol interface and should explain its behavior (delegates to wrapped transport). Add a documentation comment explaining that this delegates the send operation to the wrapped transport. Example: `/// Delegates the send operation to the wrapped transport.`.\n- [x] `Sources/MCPTestServer/ScriptedServer.swift:150` — Hardcoded error message \"ScriptedServer deallocated\" repeated 5 times across the file in identical guard patterns—should be a named constant so changes happen in one place. Define as `private static let deallocatedErrorMessage = \"ScriptedServer deallocated\"` and use throughout.\n- [x] `Sources/MCPTestServer/ScriptedServer.swift:155` — Hardcoded error message \"ScriptedServer deallocated\" duplicated—part of 5-occurrence pattern. Replace with shared named constant.\n- [x] `Sources/MCPTestServer/ScriptedServer.swift:298` — The `requestElicitation(_:)` private method wraps a single call to `server.requestElicitation()` and is used exactly once, adding indirection without meaningful abstraction. Inline the call: replace `try await self.requestElicitation(...)` with `try await self.server.requestElicitation(...)` and remove the requestElicitation method.\n- [x] `Sources/MCPTestServer/ScriptedServer.swift:345` — Hardcoded error message \"ScriptedServer deallocated\" duplicated—part of 5-occurrence pattern. Replace with shared named constant.\n- [x] `Sources/MCPTestServer/ScriptedServer.swift:357` — The `scaled(by:)` fileprivate extension method wraps a single multiplication operation and is used exactly once, adding indirection without meaningful abstraction. Inline the multiplication: replace `stepDelay.scaled(by: totalSteps)` with `stepDelay * totalSteps` and remove the Duration extension method.\n- [x] `Sources/MCPTestServer/ScriptedServer.swift:388` — Hardcoded error message \"ScriptedServer deallocated\" duplicated—part of 5-occurrence pattern. Replace with shared named constant.\n- [x] `Sources/MCPTestServer/ScriptedServer.swift:417` — Hardcoded error message \"ScriptedServer deallocated\" duplicated—part of 5-occurrence pattern. Replace with shared named constant.\n

@@ -80,10 +80,12 @@ public actor FlakyConnectTransport: Transport {
         wrappedReceiveStream = await wrapped.receive()
     }
 
+    /// Delegates the disconnect to the wrapped transport.
     public func disconnect() async {
         await wrapped.disconnect()
     }
 
+    /// Delegates the send operation to the wrapped transport.
     public func send(_ data: Data) async throws {
         try await wrapped.send(data)
     }
