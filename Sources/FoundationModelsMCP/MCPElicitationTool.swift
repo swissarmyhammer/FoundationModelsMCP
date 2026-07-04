@@ -77,12 +77,12 @@ public struct MCPElicitationTool: FoundationModels.Tool {
     /// The sensitive-subset argument's property key: the ``fieldNamesKey``
     /// values (by name, not index) holding a secret that must never be
     /// collected via an ordinary form — see
-    /// ``Elicitation/RequestSchema/requiresUrlModeRouting``.
-    private static let sensitiveFieldNamesKey = "sensitiveFieldNames"
+     /// ``Elicitation/RequestSchema/requiresURLModeRouting``.
+     private static let sensitiveFieldNamesKey = "sensitiveFieldNames"
 
     /// The URL-typed-subset argument's property key: the ``fieldNamesKey``
     /// values (by name, not index) whose answer must be a URL — also routed
-    /// to URL mode, per ``Elicitation/RequestSchema/requiresUrlModeRouting``.
+     /// to URL mode, per ``Elicitation/RequestSchema/requiresURLModeRouting``.
     private static let urlFormatFieldNamesKey = "urlFormatFieldNames"
 
     /// The JSON Schema keyword naming a field's primitive type, written into
@@ -270,7 +270,7 @@ public struct MCPElicitationTool: FoundationModels.Tool {
     ///   `fieldNamesKey` entry becoming one `properties` entry keyed by name,
     ///   annotated with its type, optional description, and (when the name
     ///   appears in `sensitiveFieldNamesKey`/`urlFormatFieldNamesKey`) the
-    ///   `secret`/`format: "url"` markers ``Elicitation/RequestSchema/requiresUrlModeRouting``
+     ///   `secret`/`format: "url"` markers ``Elicitation/RequestSchema/requiresURLModeRouting``
     ///   checks for.
     private static func makeRequestSchema(from fields: [String: Value]) -> Elicitation.RequestSchema {
         let fieldNames = stringArray(fields[fieldNamesKey])
@@ -285,8 +285,8 @@ public struct MCPElicitationTool: FoundationModels.Tool {
             properties[name] = makeFieldSchema(
                 type: fieldTypes.indices.contains(index) ? fieldTypes[index] : defaultFieldTypeName,
                 description: fieldDescriptions.indices.contains(index) ? fieldDescriptions[index] : "",
-                isSensitive: sensitiveFieldNames.contains(name),
-                isUrlFormat: urlFormatFieldNames.contains(name)
+                 isSensitive: sensitiveFieldNames.contains(name),
+                 isURLFormat: urlFormatFieldNames.contains(name)
             )
         }
 
@@ -310,11 +310,11 @@ public struct MCPElicitationTool: FoundationModels.Tool {
     ///     string to omit the `description` keyword entirely.
     ///   - isSensitive: Whether to mark this field
     ///     ``Elicitation/RequestSchema/secretKeyword``.
-    ///   - isUrlFormat: Whether to mark this field `format: "url"`.
-    /// - Returns: The field's JSON Schema node.
-    private static func makeFieldSchema(
-        type: String, description: String, isSensitive: Bool, isUrlFormat: Bool
-    ) -> Value {
+     ///   - isURLFormat: Whether to mark this field `format: "url"`.
+     /// - Returns: The field's JSON Schema node.
+     private static func makeFieldSchema(
+         type: String, description: String, isSensitive: Bool, isURLFormat: Bool
+     ) -> Value {
         var fieldSchema: [String: Value] = [typeKeyword: .string(type)]
         if !description.isEmpty {
             fieldSchema[descriptionKeyword] = .string(description)
@@ -322,7 +322,7 @@ public struct MCPElicitationTool: FoundationModels.Tool {
         if isSensitive {
             fieldSchema[Elicitation.RequestSchema.secretKeyword] = .bool(true)
         }
-        if isUrlFormat {
+         if isURLFormat {
             fieldSchema[Elicitation.RequestSchema.formatKeyword] = .string(
                 Elicitation.RequestSchema.urlFormatValue)
         }

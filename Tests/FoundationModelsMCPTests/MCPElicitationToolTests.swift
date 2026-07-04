@@ -120,7 +120,7 @@ struct MCPElicitationToolTests {
     // MARK: - Sensitive / format: "url" fields route to URL mode
 
     @Test("a sensitive-marked field routes the whole request to the coordinator's URL-mode path, never form mode")
-    func sensitiveFieldRoutesToUrlMode() async throws {
+    func sensitiveFieldRoutesToURLMode() async throws {
         let coordinator = RecordingElicitationCoordinator(
             responding: .accept(content: ["apiKey": .string("secret-value")]))
         let tool = try MCPElicitationTool(coordinator: coordinator)
@@ -141,7 +141,7 @@ struct MCPElicitationToolTests {
     }
 
     @Test("a format: url field routes the whole request to the coordinator's URL-mode path, never form mode")
-    func urlFormatFieldRoutesToUrlMode() async throws {
+    func urlFormatFieldRoutesToURLMode() async throws {
         let coordinator = RecordingElicitationCoordinator(
             responding: .accept(content: ["callbackURL": .string("https://example.com")]))
         let tool = try MCPElicitationTool(coordinator: coordinator)

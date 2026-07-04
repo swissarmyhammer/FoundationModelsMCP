@@ -140,6 +140,13 @@ public enum MCPServerError: Error, Sendable, Equatable {
 /// passed to ``connect(transport:)``; `MCPServer` never constructs a
 /// transport itself.
 public actor MCPServer {
+    /// The structured-logging metadata key naming the server a log message
+    /// concerns — every ``logger`` call in this type keys
+    /// ``identityNameForDiagnostics`` under this constant, so the key name
+    /// stays consistent (and changeable in one place) across every call
+    /// site instead of being repeated as a string literal.
+    private static let serverMetadataKey = "server"
+
     /// The wrapped swift-sdk client this actor owns for its whole lifetime.
     private let client: MCP.Client
 
@@ -332,14 +339,14 @@ public actor MCPServer {
                 try await performConnectAttempt(transport: transport, timeout: backoffPolicy.connectTimeout)
                 logger.info(
                     "MCPServer connected",
-                    metadata: ["server": "\(identityNameForDiagnostics)", "attempt": "\(attempt)"])
+                    metadata: [Self.serverMetadataKey: "\(identityNameForDiagnostics)", "attempt": "\(attempt)"])
                 return
             } catch {
                 lastError = error
                 logger.warning(
                     "MCPServer connect attempt failed",
                     metadata: [
-                        "server": "\(identityNameForDiagnostics)",
+                        Self.serverMetadataKey: "\(identityNameForDiagnostics)",
                         "attempt": "\(attempt)",
                         "maxAttempts": "\(backoffPolicy.maxAttempts)",
                         "error": "\(error)",
@@ -348,7 +355,7 @@ public actor MCPServer {
                 let delay = Self.backoffDelay(afterAttempt: attempt, policy: backoffPolicy)
                 logger.info(
                     "MCPServer backing off before next connect retry",
-                    metadata: ["server": "\(identityNameForDiagnostics)", "delay": "\(delay)"])
+                    metadata: [Self.serverMetadataKey: "\(identityNameForDiagnostics)", "delay": "\(delay)"])
                 try await clock.sleep(for: delay)
             }
         }
@@ -370,7 +377,7 @@ public actor MCPServer {
         )
         logger.error(
             "MCPServer connect backoff exhausted",
-            metadata: ["server": "\(identityNameForDiagnostics)", "attempts": "\(backoffPolicy.maxAttempts)"])
+            metadata: [Self.serverMetadataKey: "\(identityNameForDiagnostics)", "attempts": "\(backoffPolicy.maxAttempts)"])
         throw exhausted
     }
 
@@ -397,7 +404,7 @@ public actor MCPServer {
         } catch {
             logger.warning(
                 "MCPServer mid-call transport fault",
-                metadata: ["server": "\(identityNameForDiagnostics)", "tool": "\(name)", "error": "\(error)"])
+                metadata: [Self.serverMetadataKey: "\(identityNameForDiagnostics)", "tool": "\(name)", "error": "\(error)"])
             state = .faulted(String(describing: error))
             await reconnectAfterFault()
             return ToolContentRenderer.render(result: Self.faultResult(for: error))
@@ -416,18 +423,18 @@ public actor MCPServer {
         guard let lastTransport else {
             logger.error(
                 "MCPServer cannot auto-reconnect after a mid-call fault: no prior transport recorded",
-                metadata: ["server": "\(identityNameForDiagnostics)"])
+                metadata: [Self.serverMetadataKey: "\(identityNameForDiagnostics)"])
             return
         }
         do {
             try await connect(transport: lastTransport, backoffPolicy: activeBackoffPolicy)
             logger.info(
                 "MCPServer auto-reconnected after mid-call fault",
-                metadata: ["server": "\(identityNameForDiagnostics)"])
+                metadata: [Self.serverMetadataKey: "\(identityNameForDiagnostics)"])
         } catch {
             logger.error(
                 "MCPServer auto-reconnect after mid-call fault failed",
-                metadata: ["server": "\(identityNameForDiagnostics)", "error": "\(error)"])
+                metadata: [Self.serverMetadataKey: "\(identityNameForDiagnostics)", "error": "\(error)"])
         }
     }
 
@@ -532,7 +539,7 @@ public actor MCPServer {
         guard generation == connectGeneration else {
             logger.warning(
                 "MCPServer skipping a connect attempt already superseded by a newer one",
-                metadata: ["server": "\(identityNameForDiagnostics)"])
+                metadata: [Self.serverMetadataKey: "\(identityNameForDiagnostics)"])
             return
         }
         lastTransport = transport
@@ -546,7 +553,7 @@ public actor MCPServer {
             guard generation == connectGeneration else {
                 logger.warning(
                     "MCPServer discarding a stale connect success — a newer attempt has since started",
-                    metadata: ["server": "\(identityNameForDiagnostics)"])
+                    metadata: [Self.serverMetadataKey: "\(identityNameForDiagnostics)"])
                 return
             }
             if identity == nil {
@@ -559,7 +566,7 @@ public actor MCPServer {
             guard generation == connectGeneration else {
                 logger.warning(
                     "MCPServer discarding a stale connect failure — a newer attempt has since started",
-                    metadata: ["server": "\(identityNameForDiagnostics)", "error": "\(error)"])
+                    metadata: [Self.serverMetadataKey: "\(identityNameForDiagnostics)", "error": "\(error)"])
                 throw error
             }
             state = .faulted(String(describing: error))
@@ -678,7 +685,7 @@ public actor MCPServer {
 
     /// Routes one server-initiated `elicitation/create` request to
     /// `coordinator`, enforcing the no-secrets-in-form-mode rule (see
-    /// ``Elicitation/RequestSchema/requiresUrlModeRouting`` and
+     /// ``Elicitation/RequestSchema/requiresURLModeRouting`` and
     /// ``ElicitationRouting``), and converts the coordinator's
     /// ``ElicitationResponse`` back into the `CreateElicitation.Result` the
     /// server expects.

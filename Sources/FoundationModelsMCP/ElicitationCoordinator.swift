@@ -22,7 +22,7 @@ public protocol ElicitationCoordinator: Sendable {
     /// - Important: Per the MCP spec, form-mode elicitation must never
     ///   collect secrets (passwords, tokens, payment credentials). Routing
     ///   in ``MCPServer`` enforces this rule: it never calls this method
-    ///   when `requestedSchema.requiresUrlModeRouting` is `true`, calling
+    ///   when `requestedSchema.requiresURLModeRouting` is `true`, calling
     ///   ``elicit(message:url:)`` instead. Other callers of this protocol
     ///   (e.g. the agent-initiated `MCPElicitationTool`) must preserve the
     ///   same rule.
@@ -42,7 +42,7 @@ public protocol ElicitationCoordinator: Sendable {
     /// visit; and ``MCPServer``'s no-secrets-in-form-mode enforcement
     /// downgrading a form-mode request whose `requestedSchema` contained a
     /// sensitive-marked field or a `format: "url"` field (see
-    /// ``Elicitation/RequestSchema/requiresUrlModeRouting``) — a spec
+    /// ``Elicitation/RequestSchema/requiresURLModeRouting``) — a spec
     /// violation by the server, in which case there is no genuine link and
     /// `url` is `nil`. The coordinator is responsible for presenting (or,
     /// in the `nil` case, safely refusing) the request appropriately either
@@ -80,7 +80,7 @@ extension Elicitation.RequestSchema {
     /// marker is our convention, honored by the coordinator, not a spec
     /// field." A spec-compliant server that needs a secret from the user is
     /// expected to use MCP URL-mode elicitation instead of form mode in the
-    /// first place; this keyword lets ``requiresUrlModeRouting`` catch a
+    /// first place; this keyword lets ``requiresURLModeRouting`` catch a
     /// form-mode request that violates that rule anyway.
     ///
     /// Not `private`: `MCPElicitationTool` — the agent-initiated counterpart
@@ -90,13 +90,13 @@ extension Elicitation.RequestSchema {
     static let secretKeyword = "secret"
 
     /// The JSON Schema `format` keyword name, whose value is checked against
-    /// ``urlFormatValue`` by ``requiresUrlModeRouting``.
+    /// ``urlFormatValue`` by ``requiresURLModeRouting``.
     ///
     /// Not `private`: see ``secretKeyword``'s doc for why.
     static let formatKeyword = "format"
 
     /// The JSON Schema `format` value that also triggers URL-mode routing
-    /// alongside ``secretKeyword`` — see ``requiresUrlModeRouting``.
+    /// alongside ``secretKeyword`` — see ``requiresURLModeRouting``.
     ///
     /// Not `private`: see ``secretKeyword``'s doc for why.
     static let urlFormatValue = "url"
@@ -107,7 +107,7 @@ extension Elicitation.RequestSchema {
     /// ``ElicitationCoordinator/elicit(message:requestedSchema:)`` (form
     /// mode); see ``ElicitationCoordinator/elicit(message:url:)`` for the
     /// path it is routed to instead.
-    public var requiresUrlModeRouting: Bool {
+    public var requiresURLModeRouting: Bool {
         properties.values.contains { property in
             guard case .object(let fields) = property else { return false }
             return fields[Self.secretKeyword]?.boolValue == true
@@ -126,7 +126,7 @@ public enum ElicitationRouting {
     /// Routes a form-mode elicitation request to `coordinator`, calling
     /// ``ElicitationCoordinator/elicit(message:url:)`` with a `nil` url
     /// instead of ``ElicitationCoordinator/elicit(message:requestedSchema:)``
-    /// whenever `requestedSchema.requiresUrlModeRouting` is `true`.
+    /// whenever `requestedSchema.requiresURLModeRouting` is `true`.
     ///
     /// - Parameters:
     ///   - message: The human-readable prompt describing what's being asked.
@@ -138,7 +138,7 @@ public enum ElicitationRouting {
         requestedSchema: Elicitation.RequestSchema,
         coordinator: any ElicitationCoordinator
     ) async -> ElicitationResponse {
-        if requestedSchema.requiresUrlModeRouting {
+        if requestedSchema.requiresURLModeRouting {
             return await coordinator.elicit(message: message, url: nil)
         }
         return await coordinator.elicit(message: message, requestedSchema: requestedSchema)
