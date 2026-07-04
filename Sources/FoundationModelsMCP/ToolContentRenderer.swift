@@ -368,19 +368,13 @@ public enum ToolContentRenderer {
     private static func validatePropertyTypes(
         objectFields: [String: Value], against schemaFields: [String: Value]
     ) -> [String] {
-        guard case .object(let propertySchemas)? = schemaFields["properties"] else { return [] }
-        var issues: [String] = []
-        for (propertyName, propertySchemaValue) in propertySchemas.sorted(by: { $0.key < $1.key }) {
-            guard let propertyValue = objectFields[propertyName],
-                case .object(let propertySchemaFields) = propertySchemaValue,
-                let expectedType = propertySchemaFields["type"]?.stringValue,
+        validateProperties(objectFields: objectFields, against: schemaFields) {
+            propertyName, propertyValue, propertySchemaFields in
+            guard let expectedType = propertySchemaFields["type"]?.stringValue,
                 !matchesType(typeName: expectedType, against: propertyValue)
-            else { continue }
-            issues.append(
-                "property \"\(propertyName)\" expected type \"\(expectedType)\", got \"\(jsonType(of: propertyValue))\""
-            )
+            else { return nil }
+            return "property \"\(propertyName)\" expected type \"\(expectedType)\", got \"\(jsonType(of: propertyValue))\""
         }
-        return issues
     }
 
     /// Validates check 4 of ``validate(value:against:)``'s subset: each declared
@@ -396,17 +390,45 @@ public enum ToolContentRenderer {
     private static func validatePropertyEnums(
         objectFields: [String: Value], against schemaFields: [String: Value]
     ) -> [String] {
+        validateProperties(objectFields: objectFields, against: schemaFields) {
+            propertyName, propertyValue, propertySchemaFields in
+            guard case .array(let enumValues)? = propertySchemaFields["enum"],
+                let actual = scalarString(value: propertyValue)
+            else { return nil }
+            let allowed = enumValues.compactMap { scalarString(value: $0) }
+            guard !allowed.contains(actual) else { return nil }
+            return "property \"\(propertyName)\" value \"\(actual)\" is not one of \(allowed)"
+        }
+    }
+
+    /// The shared per-property iteration behind ``validatePropertyTypes(objectFields:against:)``
+    /// and ``validatePropertyEnums(objectFields:against:)``: walks `schemaFields`'s
+    /// declared `properties`, sorted by name, pairing each with its corresponding
+    /// `objectFields` value, and collects whatever issue `validate` reports for it.
+    ///
+    /// - Parameters:
+    ///   - objectFields: `value`'s own fields, already unwrapped from its `.object` case.
+    ///   - schemaFields: `schema`'s own fields.
+    ///   - validate: Called once per declared property present in both `objectFields`
+    ///     and `schemaFields["properties"]`, with that property's name, value, and own
+    ///     (already-unwrapped) schema fields. Returns the issue text to report, or `nil`
+    ///     if the property satisfies whatever this closure checks.
+    /// - Returns: Every non-`nil` issue `validate` returned, in sorted-by-name order.
+    ///   A property absent from `objectFields`, or whose own schema isn't an object
+    ///   node, is skipped before `validate` is ever called. Empty if `schemaFields`
+    ///   declares no `properties`.
+    private static func validateProperties(
+        objectFields: [String: Value], against schemaFields: [String: Value],
+        validate: (_ propertyName: String, _ propertyValue: Value, _ propertySchemaFields: [String: Value]) -> String?
+    ) -> [String] {
         guard case .object(let propertySchemas)? = schemaFields["properties"] else { return [] }
         var issues: [String] = []
         for (propertyName, propertySchemaValue) in propertySchemas.sorted(by: { $0.key < $1.key }) {
             guard let propertyValue = objectFields[propertyName],
-                case .object(let propertySchemaFields) = propertySchemaValue,
-                case .array(let enumValues)? = propertySchemaFields["enum"],
-                let actual = scalarString(value: propertyValue)
+                case .object(let propertySchemaFields) = propertySchemaValue
             else { continue }
-            let allowed = enumValues.compactMap { scalarString(value: $0) }
-            if !allowed.contains(actual) {
-                issues.append("property \"\(propertyName)\" value \"\(actual)\" is not one of \(allowed)")
+            if let issue = validate(propertyName, propertyValue, propertySchemaFields) {
+                issues.append(issue)
             }
         }
         return issues

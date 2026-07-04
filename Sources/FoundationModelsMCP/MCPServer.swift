@@ -678,7 +678,7 @@ public actor MCPServer {
 
     /// Routes one server-initiated `elicitation/create` request to
     /// `coordinator`, enforcing the no-secrets-in-form-mode rule (see
-    /// ``Elicitation/RequestSchema/requiresURLModeRouting`` and
+    /// ``Elicitation/RequestSchema/requiresUrlModeRouting`` and
     /// ``ElicitationRouting``), and converts the coordinator's
     /// ``ElicitationResponse`` back into the `CreateElicitation.Result` the
     /// server expects.

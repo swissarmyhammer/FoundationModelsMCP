@@ -111,7 +111,7 @@ struct ElicitationServerTests {
     // MARK: - URL-mode routing (no-secrets enforcement)
 
     @Test("A requestedSchema with a secret-marked field routes to the coordinator's URL-mode path, never form mode")
-    func secretMarkedFieldRoutesToURLMode() async throws {
+    func secretMarkedFieldRoutesToUrlMode() async throws {
         let sensitiveSchema = Elicitation.RequestSchema(
             properties: [
                 "apiKey": .object(["type": .string("string"), "secret": .bool(true)])
@@ -133,7 +133,7 @@ struct ElicitationServerTests {
     }
 
     @Test("A requestedSchema with a format: url field routes to the coordinator's URL-mode path, never form mode")
-    func urlFormatFieldRoutesToURLMode() async throws {
+    func urlFormatFieldRoutesToUrlMode() async throws {
         let urlFormatSchema = Elicitation.RequestSchema(
             properties: [
                 "callbackURL": .object(["type": .string("string"), "format": .string("url")])
