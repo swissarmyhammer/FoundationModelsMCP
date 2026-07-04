@@ -250,7 +250,11 @@ public enum ToolContentRenderer {
 
     /// Renders a `Value` as sorted-key JSON text, for deterministic,
     /// diffable output.
-    private static func jsonString(for value: Value) -> String {
+    ///
+    /// Not `private`: ``MCPElicitationTool`` reuses this exact rendering —
+    /// sorted-key JSON with a `description`-based fallback — for its own
+    /// accept-content rendering, rather than duplicating it.
+    static func jsonString(for value: Value) -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         guard let data = try? encoder.encode(value),

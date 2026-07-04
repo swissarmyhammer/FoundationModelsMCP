@@ -82,15 +82,24 @@ extension Elicitation.RequestSchema {
     /// expected to use MCP URL-mode elicitation instead of form mode in the
     /// first place; this keyword lets ``requiresURLModeRouting`` catch a
     /// form-mode request that violates that rule anyway.
-    private static let secretKeyword = "secret"
+    ///
+    /// Not `private`: `MCPElicitationTool` — the agent-initiated counterpart
+    /// to this schema — writes this exact keyword into the field schemas it
+    /// synthesizes, and references this constant directly instead of
+    /// duplicating the literal.
+    static let secretKeyword = "secret"
 
     /// The JSON Schema `format` keyword name, whose value is checked against
     /// ``urlFormatValue`` by ``requiresURLModeRouting``.
-    private static let formatKeyword = "format"
+    ///
+    /// Not `private`: see ``secretKeyword``'s doc for why.
+    static let formatKeyword = "format"
 
     /// The JSON Schema `format` value that also triggers URL-mode routing
     /// alongside ``secretKeyword`` — see ``requiresURLModeRouting``.
-    private static let urlFormatValue = "url"
+    ///
+    /// Not `private`: see ``secretKeyword``'s doc for why.
+    static let urlFormatValue = "url"
 
     /// Whether any property in ``properties`` is marked ``secretKeyword`` or
     /// declares `format: "url"` — either of which means this schema must
