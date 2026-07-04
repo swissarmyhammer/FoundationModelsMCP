@@ -19,6 +19,20 @@ enum MockClientError: Error, Equatable {
 /// ``MockClientError/noScriptedResult``.
 ///
 /// Test-target only — never shipped in the library.
+///
+/// ## Synchronization invariant
+///
+/// `@unchecked Sendable` is safe here because each test constructs its own
+/// private `MockClient` instance and every call against it — `script(_:)`,
+/// `script(throwing:)`, and `callTool(name:arguments:)` — is awaited
+/// sequentially from that single test function's task. Swift Testing may run
+/// different `@Test` functions concurrently, but that only ever creates
+/// *separate* `MockClient` instances on *separate* tasks; no instance is ever
+/// shared across tasks or mutated from more than one task at a time. If a
+/// future test needs to hand one `MockClient` to concurrently-executing code
+/// (e.g. a `TaskGroup` exercising overlapping tool calls), this invariant no
+/// longer holds and the mutable state (`invocations`, `scriptedResults`) must
+/// move behind an actor or a lock instead.
 final class MockClient: MCPToolCalling, @unchecked Sendable {
     /// One recorded `callTool` invocation: the tool name and the arguments
     /// exactly as received.

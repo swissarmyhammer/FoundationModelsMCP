@@ -27,20 +27,4 @@ position_column: doing
 position_ordinal: '80'
 title: 'Test fixture: MockClient conforming to the library''s client seam'
 ---
-## What
-Create `Tests/FoundationModelsMCPTests/Support/MockClient.swift`: a mock/recording implementation of the **library's client seam protocol**. Note: the protocol was expected to be defined by the MCPTool adapter task, but that task actually depends on this one (not vice versa), so this task defined the seam itself — `Sources/FoundationModelsMCP/MCPToolCalling.swift` (public protocol `MCPToolCalling`, with `MCP.Client` conforming via extension) — since the swift-sdk's `MCP.Client` is a concrete actor and cannot be substituted directly. MockClient records `callTool(name:arguments:)` invocations exactly and returns scripted results: success, `isError`, `structuredContent`, and each content type (`.text`/`.image`/`.audio`/`.resource`/`.resourceLink`). Test-target only. (The scriptable server lives in its own utility-target task.)
-
-- [x] MockClient conforms to the client seam protocol
-- [x] Records name + arguments byte-for-byte
-- [x] Scripted results for success/error/structured/every content case
-
-## Acceptance Criteria
-- [x] Compiles in the test target only (never shipped in the library) — the seam protocol itself lives in Sources/ since the future MCPTool task depends on it
-- [x] Self-test proves exact recording and scripted-result playback
-
-## Tests
-- [x] `Tests/FoundationModelsMCPTests/Support/MockClientSelfTests.swift`: recording fidelity + playback of each scripted result kind
-- [x] `swift test --filter MockClientSelf` green
-
-## Workflow
-- Use `/tdd` — write failing tests first, then implement to make them pass.
+## What\nCreate `Tests/FoundationModelsMCPTests/Support/MockClient.swift`: a mock/recording implementation of the **library's client seam protocol**. Note: the protocol was expected to be defined by the MCPTool adapter task, but that task actually depends on this one (not vice versa), so this task defined the seam itself — `Sources/FoundationModelsMCP/MCPToolCalling.swift` (public protocol `MCPToolCalling`, with `MCP.Client` conforming via extension) — since the swift-sdk's `MCP.Client` is a concrete actor and cannot be substituted directly. MockClient records `callTool(name:arguments:)` invocations exactly and returns scripted results: success, `isError`, `structuredContent`, and each content type (`.text`/`.image`/`.audio`/`.resource`/`.resourceLink`). Test-target only. (The scriptable server lives in its own utility-target task.)\n\n- [x] MockClient conforms to the client seam protocol\n- [x] Records name + arguments byte-for-byte\n- [x] Scripted results for success/error/structured/every content case\n\n## Acceptance Criteria\n- [x] Compiles in the test target only (never shipped in the library) — the seam protocol itself lives in Sources/ since the future MCPTool task depends on it\n- [x] Self-test proves exact recording and scripted-result playback\n\n## Tests\n- [x] `Tests/FoundationModelsMCPTests/Support/MockClientSelfTests.swift`: recording fidelity + playback of each scripted result kind\n- [x] `swift test --filter MockClientSelf` green\n\n## Workflow\n- Use `/tdd` — write failing tests first, then implement to make them pass.\n\n## Review Findings (2026-07-04 06:56)\n\n- [x] `Tests/FoundationModelsMCPTests/Support/MockClient.swift:22` — `@unchecked Sendable` conformance requires a documented synchronization invariant explaining how the mutable state (`invocations` and `scriptedResults`) remains safe across task boundaries. The comment \"Test-target only\" describes scope, not synchronization. Either: (1) Add a comment documenting the invariant (e.g., \"Used serially within single tests; no concurrent access occurs\"), or (2) convert to an actor, or (3) protect mutable state with a lock.
