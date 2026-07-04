@@ -415,18 +415,47 @@ public enum SchemaConverter {
             inclusive: decimalValue(fields["maximum"]),
             exclusive: decimalValue(fields["exclusiveMaximum"]),
             isInteger: isInteger, selectMaximum: true)
+        return applyBoundsGuide(
+            to: base, minimum: minimum, maximum: maximum, keyword: "minimum", path: path, onDrop: onDrop
+        ) { .numericRange(minimum: $0, maximum: $1) }
+    }
+
+    /// Guards a computed minimum/maximum bound pair against crossing and, if valid, wraps `base` in ``SchemaIR/guided(base:guide:)``.
+    ///
+    /// Shared by ``applyNumericRangeGuide(to:fields:path:onDrop:)`` and
+    /// ``applyCountGuide(to:fields:path:onDrop:)``, which differ only in the
+    /// bound type (`Decimal` for JSON Schema numbers, `Int` for array
+    /// counts), the keyword named in the log record when the bounds cross,
+    /// and how the valid bounds become a ``SchemaIR/GuideSpec``. Both share
+    /// the same three-step shape: skip if neither bound is present, drop
+    /// (logged) if both are present but cross — since a crossed pair
+    /// describes no value/array at all and a naive `ClosedRange` would trap
+    /// on it — and otherwise construct the guide.
+    ///
+    /// - Parameters:
+    ///   - base: The already-resolved base schema to wrap or return unchanged.
+    ///   - minimum: The effective minimum bound, or `nil` if none.
+    ///   - maximum: The effective maximum bound, or `nil` if none.
+    ///   - keyword: The JSON Schema keyword to name in the log record if the bounds cross.
+    ///   - path: A slash-delimited JSON path to this node, for ``SchemaConversionLogRecord``.
+    ///   - onDrop: Invoked if both bounds are present and cross (`minimum > maximum`).
+    ///   - makeGuide: Constructs the ``SchemaIR/GuideSpec`` from the valid (non-crossing) bounds.
+    /// - Returns: `base` unchanged if neither bound is present or they cross, or `.guided(base:, guide: makeGuide(minimum, maximum))` if a valid bound is present.
+    private static func applyBoundsGuide<Bound: Comparable>(
+        to base: SchemaIR,
+        minimum: Bound?,
+        maximum: Bound?,
+        keyword: String,
+        path: String,
+        onDrop: SchemaConversionLogHandler,
+        makeGuide: (Bound?, Bound?) -> SchemaIR.GuideSpec
+    ) -> SchemaIR {
         guard minimum != nil || maximum != nil else { return base }
-        // A schema whose bounds cross once exclusive bounds are nudged inward
-        // (e.g. `exclusiveMinimum: 5, exclusiveMaximum: 6` on an integer, or
-        // any `minimum`/`maximum` pair with `minimum > maximum`) describes no
-        // value at all. `ClosedRange` traps on a crossed bound, so this is
-        // dropped (logged) instead of constructing one — never throwing and
-        // never crashing, matching the `pattern` guide's fallback policy.
         if let minimum, let maximum, minimum > maximum {
-            onDrop(SchemaConversionLogRecord(keyword: "minimum", path: path))
+            onDrop(SchemaConversionLogRecord(keyword: keyword, path: path))
             return base
         }
-        return .guided(base: base, guide: .numericRange(minimum: minimum, maximum: maximum))
+        return .guided(base: base, guide: makeGuide(minimum, maximum))
     }
 
     /// Combines an inclusive bound (`minimum`/`maximum`) with its nudged-inward exclusive counterpart (`exclusiveMinimum`/`exclusiveMaximum`), taking the stricter of the two when both are present.
@@ -533,6 +562,15 @@ public enum SchemaConverter {
 
     /// Reads a property's JSON Schema `description`, given its raw (as-yet-unparsed) value from the enclosing object's `properties` map.
     ///
+    /// Has exactly one call site (`parseObject`'s properties loop) and the
+    /// guard-case-plus-dictionary-lookup it wraps is not, on its own,
+    /// complex enough to need extracting for that reason alone. It stays a
+    /// separate function anyway: inlining it back into the `for` loop would
+    /// reintroduce the `function → if → for → if` nesting that this
+    /// extraction flattened to `function → if → for → call` in an earlier
+    /// review round. This is a deliberate call-site-readability trade-off,
+    /// not a case of "single-use rule" cargo culting.
+    ///
     /// - Parameter propertySchema: The property's raw JSON Schema value.
     /// - Returns: The property's `description` string, or `nil` if `propertySchema` is not an object node (every valid JSON Schema property schema is) or has no `description`.
     private static func parsePropertyDescription(_ propertySchema: Value) -> String? {
@@ -578,17 +616,14 @@ public enum SchemaConverter {
     ) -> SchemaIR {
         let minimum = intValue(fields["minItems"])
         let maximum = intValue(fields["maxItems"])
-        guard minimum != nil || maximum != nil else { return base }
         // `minItems > maxItems` is self-contradictory (no array satisfies
-        // it); rather than silently emitting an unsatisfiable schema
-        // verbatim, drop the constraint (logged) and keep the plain
-        // structural array, mirroring `applyNumericRangeGuide`'s crossed-
-        // bound handling.
-        if let minimum, let maximum, minimum > maximum {
-            onDrop(SchemaConversionLogRecord(keyword: "minItems", path: path))
-            return base
-        }
-        return .guided(base: base, guide: .count(minimum: minimum, maximum: maximum))
+        // it); `applyBoundsGuide` drops the constraint (logged) and keeps
+        // the plain structural array rather than silently emitting an
+        // unsatisfiable schema verbatim, mirroring
+        // `applyNumericRangeGuide`'s crossed-bound handling.
+        return applyBoundsGuide(
+            to: base, minimum: minimum, maximum: maximum, keyword: "minItems", path: path, onDrop: onDrop
+        ) { .count(minimum: $0, maximum: $1) }
     }
 
     /// Reads a JSON Schema integer keyword's raw `Value` as an `Int`.
