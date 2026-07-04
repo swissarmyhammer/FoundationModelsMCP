@@ -112,6 +112,6 @@ public struct MCPTool: FoundationModels.Tool {
     public func call(arguments: GeneratedContent) async throws -> String {
         let mcpArguments = try GeneratedContentCodec.arguments(from: arguments)
         let result = try await client.callTool(name: tool.name, arguments: mcpArguments)
-        return ToolContentRenderer.render(result, outputSchema: tool.outputSchema)
+        return ToolContentRenderer.render(result: result, outputSchema: tool.outputSchema)
     }
 }

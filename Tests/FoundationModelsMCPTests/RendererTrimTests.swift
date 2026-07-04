@@ -29,7 +29,7 @@ struct RendererTrimTests {
         let result = CallTool.Result(content: [.text(text: text, annotations: nil, _meta: nil)])
         let budget = 2_048
 
-        let rendered = ToolContentRenderer.render(result, budget: budget)
+        let rendered = ToolContentRenderer.render(result: result, budget: budget)
 
         #expect(rendered.hasPrefix("HEAD-SENTINEL"))
         #expect(rendered.hasSuffix("TAIL-SENTINEL"))
@@ -41,8 +41,8 @@ struct RendererTrimTests {
         let text = oneMegabyteText(head: "HEAD", tail: "TAIL")
         let result = CallTool.Result(content: [.text(text: text, annotations: nil, _meta: nil)])
 
-        let first = ToolContentRenderer.render(result, budget: 4_096)
-        let second = ToolContentRenderer.render(result, budget: 4_096)
+        let first = ToolContentRenderer.render(result: result, budget: 4_096)
+        let second = ToolContentRenderer.render(result: result, budget: 4_096)
 
         #expect(first == second)
     }
@@ -54,7 +54,7 @@ struct RendererTrimTests {
         let result = CallTool.Result(content: [.resource(resource: resource, annotations: nil, _meta: nil)])
         let budget = 2_048
 
-        let rendered = ToolContentRenderer.render(result, budget: budget)
+        let rendered = ToolContentRenderer.render(result: result, budget: budget)
 
         #expect(rendered.contains("file:///huge.txt"))
         #expect(rendered.contains("HEAD-SENTINEL"))
@@ -77,7 +77,7 @@ struct RendererTrimTests {
         let text = String(repeating: "x", count: 20_000)
         for budget in 19_900...19_999 {
             let result = CallTool.Result(content: [.text(text: text, annotations: nil, _meta: nil)])
-            let rendered = ToolContentRenderer.render(result, budget: budget)
+            let rendered = ToolContentRenderer.render(result: result, budget: budget)
             assertBudgetSafeTrim(rendered: rendered, totalCount: text.count, budget: budget)
         }
     }
@@ -94,7 +94,7 @@ struct RendererTrimTests {
         let result = CallTool.Result(content: [.text(text: text, annotations: nil, _meta: nil)])
         let budget = 200
 
-        let rendered = ToolContentRenderer.render(result, budget: budget)
+        let rendered = ToolContentRenderer.render(result: result, budget: budget)
 
         #expect(rendered.hasPrefix(head))
         #expect(rendered.hasSuffix(tail))
@@ -110,7 +110,7 @@ struct RendererTrimTests {
             .image(data: hugeBase64Payload, mimeType: "image/png", annotations: nil, _meta: nil)
         ])
 
-        let rendered = ToolContentRenderer.render(result, budget: 1)
+        let rendered = ToolContentRenderer.render(result: result, budget: 1)
 
         #expect(rendered == "[image: image/png]")
         #expect(!rendered.contains("QQ=="))
@@ -123,7 +123,7 @@ struct RendererTrimTests {
             .audio(data: hugeBase64Payload, mimeType: "audio/mpeg", annotations: nil, _meta: nil)
         ])
 
-        let rendered = ToolContentRenderer.render(result, budget: 1)
+        let rendered = ToolContentRenderer.render(result: result, budget: 1)
 
         #expect(rendered == "[audio: audio/mpeg]")
         #expect(!rendered.contains("QQ=="))
@@ -138,7 +138,7 @@ struct RendererTrimTests {
         let result = CallTool.Result(content: [], structuredContent: structured as Value?)
         let budget = 2_048
 
-        let rendered = ToolContentRenderer.render(result, budget: budget)
+        let rendered = ToolContentRenderer.render(result: result, budget: budget)
 
         #expect(rendered.contains("Structured result:"))
         #expect(rendered.contains("HEAD-SENTINEL"))
@@ -158,8 +158,8 @@ struct RendererTrimTests {
         let structured: Value = .object(["payload": .string(text)])
         let result = CallTool.Result(content: [], structuredContent: structured as Value?)
 
-        let first = ToolContentRenderer.render(result, budget: 4_096)
-        let second = ToolContentRenderer.render(result, budget: 4_096)
+        let first = ToolContentRenderer.render(result: result, budget: 4_096)
+        let second = ToolContentRenderer.render(result: result, budget: 4_096)
 
         #expect(first == second)
     }
@@ -170,7 +170,7 @@ struct RendererTrimTests {
     func smallTextResultIsUntouchedUnderDefaultBudget() {
         let result = CallTool.Result(content: [.text(text: "hello world", annotations: nil, _meta: nil)])
 
-        let rendered = ToolContentRenderer.render(result, budget: ToolContentRenderer.defaultRenderBudget)
+        let rendered = ToolContentRenderer.render(result: result, budget: ToolContentRenderer.defaultRenderBudget)
 
         #expect(rendered == "hello world")
     }
@@ -180,7 +180,7 @@ struct RendererTrimTests {
         let text = "short"
         let result = CallTool.Result(content: [.text(text: text, annotations: nil, _meta: nil)])
 
-        let rendered = ToolContentRenderer.render(result, budget: text.count)
+        let rendered = ToolContentRenderer.render(result: result, budget: text.count)
 
         #expect(rendered == text)
     }
@@ -194,8 +194,8 @@ struct RendererTrimTests {
             isError: true
         )
 
-        let withoutBudget = ToolContentRenderer.render(result)
-        let withGenerousBudget = ToolContentRenderer.render(result, budget: ToolContentRenderer.defaultRenderBudget)
+        let withoutBudget = ToolContentRenderer.render(result: result)
+        let withGenerousBudget = ToolContentRenderer.render(result: result, budget: ToolContentRenderer.defaultRenderBudget)
 
         #expect(withoutBudget == withGenerousBudget)
     }

@@ -17,7 +17,7 @@ struct RendererTests {
     @Test("text content renders verbatim")
     func textContentRendersVerbatim() {
         let result = CallTool.Result(content: [.text(text: "hello world", annotations: nil, _meta: nil)])
-        let rendered = ToolContentRenderer.render(result)
+        let rendered = ToolContentRenderer.render(result: result)
         #expect(rendered == "hello world")
     }
 
@@ -26,7 +26,7 @@ struct RendererTests {
         let result = CallTool.Result(content: [
             .image(data: "aGVsbG8=", mimeType: "image/png", annotations: nil, _meta: nil)
         ])
-        let rendered = ToolContentRenderer.render(result)
+        let rendered = ToolContentRenderer.render(result: result)
         #expect(rendered.contains("image/png"))
         #expect(!rendered.contains("aGVsbG8="))
     }
@@ -36,7 +36,7 @@ struct RendererTests {
         let result = CallTool.Result(content: [
             .audio(data: "aGVsbG8=", mimeType: "audio/mpeg", annotations: nil, _meta: nil)
         ])
-        let rendered = ToolContentRenderer.render(result)
+        let rendered = ToolContentRenderer.render(result: result)
         #expect(rendered.contains("audio/mpeg"))
         #expect(!rendered.contains("aGVsbG8="))
     }
@@ -45,7 +45,7 @@ struct RendererTests {
     func resourceContentWithTextRendersText() {
         let resource = Resource.Content.text("file body", uri: "file:///notes.txt", mimeType: "text/plain")
         let result = CallTool.Result(content: [.resource(resource: resource, annotations: nil, _meta: nil)])
-        let rendered = ToolContentRenderer.render(result)
+        let rendered = ToolContentRenderer.render(result: result)
         #expect(rendered.contains("file:///notes.txt"))
         #expect(rendered.contains("file body"))
     }
@@ -55,7 +55,7 @@ struct RendererTests {
         let resource = Resource.Content.binary(
             Data("binary".utf8), uri: "file:///image.bin", mimeType: "application/octet-stream")
         let result = CallTool.Result(content: [.resource(resource: resource, annotations: nil, _meta: nil)])
-        let rendered = ToolContentRenderer.render(result)
+        let rendered = ToolContentRenderer.render(result: result)
         #expect(rendered.contains("file:///image.bin"))
         #expect(rendered.contains("application/octet-stream"))
     }
@@ -72,7 +72,7 @@ struct RendererTests {
                 annotations: nil
             )
         ])
-        let rendered = ToolContentRenderer.render(result)
+        let rendered = ToolContentRenderer.render(result: result)
         #expect(rendered.contains("https://example.com/does-not-exist-and-is-never-fetched"))
         #expect(rendered.contains("Example Resource"))
         // Only the link's declared metadata is rendered — description is not
@@ -87,7 +87,7 @@ struct RendererTests {
             .text(text: "first", annotations: nil, _meta: nil),
             .text(text: "second", annotations: nil, _meta: nil),
         ])
-        let rendered = ToolContentRenderer.render(result)
+        let rendered = ToolContentRenderer.render(result: result)
         #expect(rendered.contains("first"))
         #expect(rendered.contains("second"))
     }
@@ -97,14 +97,14 @@ struct RendererTests {
     @Test("isError nil means success — no error marker")
     func isErrorNilMeansSuccess() {
         let result = CallTool.Result(content: [.text(text: "ok", annotations: nil, _meta: nil)], isError: nil)
-        let rendered = ToolContentRenderer.render(result)
+        let rendered = ToolContentRenderer.render(result: result)
         #expect(!rendered.contains("Error"))
     }
 
     @Test("isError false means success — no error marker")
     func isErrorFalseMeansSuccess() {
         let result = CallTool.Result(content: [.text(text: "ok", annotations: nil, _meta: nil)], isError: false)
-        let rendered = ToolContentRenderer.render(result)
+        let rendered = ToolContentRenderer.render(result: result)
         #expect(!rendered.contains("Error"))
     }
 
@@ -112,7 +112,7 @@ struct RendererTests {
     func isErrorTrueIsMarked() {
         let result = CallTool.Result(
             content: [.text(text: "boom", annotations: nil, _meta: nil)], isError: true)
-        let rendered = ToolContentRenderer.render(result)
+        let rendered = ToolContentRenderer.render(result: result)
         #expect(rendered.contains("Error"))
         #expect(rendered.contains("boom"))
     }
@@ -123,7 +123,7 @@ struct RendererTests {
     func structuredContentIsSurfaced() {
         let structured: Value = .object(["name": .string("Alice"), "age": .int(30)])
         let result = CallTool.Result(content: [], structuredContent: structured as Value?)
-        let rendered = ToolContentRenderer.render(result)
+        let rendered = ToolContentRenderer.render(result: result)
         #expect(rendered.contains("Alice"))
         #expect(rendered.contains("30"))
     }
@@ -132,7 +132,7 @@ struct RendererTests {
     func structuredContentWithoutSchemaHasNoNote() {
         let structured: Value = .object(["anything": .string("goes")])
         let result = CallTool.Result(content: [], structuredContent: structured as Value?)
-        let rendered = ToolContentRenderer.render(result, outputSchema: nil)
+        let rendered = ToolContentRenderer.render(result: result, outputSchema: nil)
         #expect(!rendered.contains("Note"))
     }
 
@@ -159,7 +159,7 @@ struct RendererTests {
             "name": .string("Alice"), "age": .int(30), "status": .string("active"),
         ])
         let result = CallTool.Result(content: [], structuredContent: structured as Value?)
-        let rendered = ToolContentRenderer.render(result, outputSchema: passingSchema)
+        let rendered = ToolContentRenderer.render(result: result, outputSchema: passingSchema)
         #expect(!rendered.contains("Note"))
     }
 
@@ -169,7 +169,7 @@ struct RendererTests {
     func topLevelTypeMismatchIsNoted() {
         let structured: Value = .array([.string("not an object")])
         let result = CallTool.Result(content: [], structuredContent: structured as Value?)
-        let rendered = ToolContentRenderer.render(result, outputSchema: passingSchema)
+        let rendered = ToolContentRenderer.render(result: result, outputSchema: passingSchema)
         #expect(rendered.contains("Note"))
         #expect(rendered.contains("object"))
         #expect(rendered.contains("array"))
@@ -181,7 +181,7 @@ struct RendererTests {
     func missingRequiredPropertyIsNoted() {
         let structured: Value = .object(["name": .string("Alice")])
         let result = CallTool.Result(content: [], structuredContent: structured as Value?)
-        let rendered = ToolContentRenderer.render(result, outputSchema: passingSchema)
+        let rendered = ToolContentRenderer.render(result: result, outputSchema: passingSchema)
         #expect(rendered.contains("Note"))
         #expect(rendered.contains("age"))
     }
@@ -192,7 +192,7 @@ struct RendererTests {
             "name": .string("Alice"), "age": .string("thirty"),
         ])
         let result = CallTool.Result(content: [], structuredContent: structured as Value?)
-        let rendered = ToolContentRenderer.render(result, outputSchema: passingSchema)
+        let rendered = ToolContentRenderer.render(result: result, outputSchema: passingSchema)
         #expect(rendered.contains("Note"))
         #expect(rendered.contains("age"))
     }
@@ -203,7 +203,7 @@ struct RendererTests {
             "name": .string("Alice"), "age": .int(30), "status": .string("unknown"),
         ])
         let result = CallTool.Result(content: [], structuredContent: structured as Value?)
-        let rendered = ToolContentRenderer.render(result, outputSchema: passingSchema)
+        let rendered = ToolContentRenderer.render(result: result, outputSchema: passingSchema)
         #expect(rendered.contains("Note"))
         #expect(rendered.contains("status"))
     }
@@ -224,7 +224,7 @@ struct RendererTests {
         // pinned subset does not inspect additionalProperties at all.
         let structured: Value = .object(["name": .string("Alice"), "extra": .string("surprise")])
         let result = CallTool.Result(content: [], structuredContent: structured as Value?)
-        let rendered = ToolContentRenderer.render(result, outputSchema: schemaWithAdditionalProperties)
+        let rendered = ToolContentRenderer.render(result: result, outputSchema: schemaWithAdditionalProperties)
         #expect(!rendered.contains("Note"))
     }
 
@@ -240,7 +240,7 @@ struct RendererTests {
         // reject this; the pinned subset only checks primitive `type`.
         let structured: Value = .object(["email": .string("not-an-email")])
         let result = CallTool.Result(content: [], structuredContent: structured as Value?)
-        let rendered = ToolContentRenderer.render(result, outputSchema: schemaWithFormat)
+        let rendered = ToolContentRenderer.render(result: result, outputSchema: schemaWithFormat)
         #expect(!rendered.contains("Note"))
     }
 
@@ -264,7 +264,7 @@ struct RendererTests {
         // level deep, and does not recurse further.
         let structured: Value = .object(["address": .object([:])])
         let result = CallTool.Result(content: [], structuredContent: structured as Value?)
-        let rendered = ToolContentRenderer.render(result, outputSchema: schemaWithNestedRequired)
+        let rendered = ToolContentRenderer.render(result: result, outputSchema: schemaWithNestedRequired)
         #expect(!rendered.contains("Note"))
     }
 
@@ -284,7 +284,7 @@ struct RendererTests {
             "payload": .data(mimeType: "text/plain", Data("hello".utf8))
         ])
         let result = CallTool.Result(content: [], structuredContent: structured as Value?)
-        let rendered = ToolContentRenderer.render(result, outputSchema: schema)
+        let rendered = ToolContentRenderer.render(result: result, outputSchema: schema)
         #expect(!rendered.contains("Note"))
     }
 
@@ -303,7 +303,7 @@ struct RendererTests {
         ])
         let structured: Value = .object(["count": .int(3)])
         let result = CallTool.Result(content: [], structuredContent: structured as Value?)
-        let rendered = ToolContentRenderer.render(result, outputSchema: schema)
+        let rendered = ToolContentRenderer.render(result: result, outputSchema: schema)
         #expect(!rendered.contains("Note"))
     }
 
@@ -319,7 +319,7 @@ struct RendererTests {
         ])
         let structured: Value = .object(["count": .double(3.5)])
         let result = CallTool.Result(content: [], structuredContent: structured as Value?)
-        let rendered = ToolContentRenderer.render(result, outputSchema: schema)
+        let rendered = ToolContentRenderer.render(result: result, outputSchema: schema)
         #expect(rendered.contains("Note"))
         #expect(rendered.contains("expected type \"integer\", got \"number\""))
     }
@@ -334,7 +334,7 @@ struct RendererTests {
             structuredContent: structuredContent as Value?,
             isError: true
         )
-        let rendered = ToolContentRenderer.render(result)
+        let rendered = ToolContentRenderer.render(result: result)
         #expect(rendered.contains("Error"))
         #expect(rendered.contains("partial failure"))
         #expect(rendered.contains("500"))
@@ -347,7 +347,7 @@ struct RendererTests {
             content: [.text(text: "call succeeded", annotations: nil, _meta: nil)],
             structuredContent: structured as Value?
         )
-        let rendered = ToolContentRenderer.render(result, outputSchema: passingSchema)
+        let rendered = ToolContentRenderer.render(result: result, outputSchema: passingSchema)
         // The failure is a note alongside the content, not a replacement for it.
         #expect(rendered.contains("call succeeded"))
         #expect(rendered.contains("Alice"))

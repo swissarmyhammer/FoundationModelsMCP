@@ -16,7 +16,7 @@ public enum ToolContentRenderer {
 
     /// The default render budget, in characters: the maximum length of any
     /// single rendered text unit — a `.text`/`.resource` content item's text,
-    /// or `structuredContent`'s JSON — before ``trimmed(_:budget:)`` elides
+    /// or `structuredContent`'s JSON — before ``trimmed(text:budget:)`` elides
     /// its middle.
     ///
     /// Tool results are the context-window cost, not the model's own output,
@@ -40,7 +40,7 @@ public enum ToolContentRenderer {
     /// still rendered in full.
     ///
     /// Per-content-case rendering:
-    /// - `.text`: the text, trimmed to `budget` — see ``trimmed(_:budget:)``.
+    /// - `.text`: the text, trimmed to `budget` — see ``trimmed(text:budget:)``.
     /// - `.image` / `.audio`: a `"[image: <mimeType>]"` / `"[audio:
     ///   <mimeType>]"` placeholder — the base64 payload is never rendered,
     ///   regardless of `budget`.
@@ -69,10 +69,10 @@ public enum ToolContentRenderer {
     ///     `nil` skips validation entirely.
     ///   - budget: The maximum character count for any single rendered text
     ///     unit before it is trimmed; see ``defaultRenderBudget`` for the
-    ///     default and ``trimmed(_:budget:)`` for the trimming rule.
+    ///     default and ``trimmed(text:budget:)`` for the trimming rule.
     /// - Returns: The rendered text.
     public static func render(
-        _ result: CallTool.Result, outputSchema: Value? = nil, budget: Int = defaultRenderBudget
+        result: CallTool.Result, outputSchema: Value? = nil, budget: Int = defaultRenderBudget
     ) -> String {
         var sections: [String] = []
 
@@ -97,24 +97,24 @@ public enum ToolContentRenderer {
 
     /// Renders one `Tool.Content` item.
     ///
-    /// See ``render(_:outputSchema:budget:)`` for the documented per-case
+    /// See ``render(result:outputSchema:budget:)`` for the documented per-case
     /// format.
     ///
     /// - Parameters:
     ///   - content: The content item to render.
     ///   - budget: The maximum character count before text-bearing cases are
-    ///     trimmed; see ``trimmed(_:budget:)``.
+    ///     trimmed; see ``trimmed(text:budget:)``.
     /// - Returns: The rendered text for `content`.
     private static func render(content: Tool.Content, budget: Int) -> String {
         switch content {
         case .text(let text, _, _):
-            return trimmed(text, budget: budget)
+            return trimmed(text: text, budget: budget)
         case .image(_, let mimeType, _, _):
             return "[image: \(mimeType)]"
         case .audio(_, let mimeType, _, _):
             return "[audio: \(mimeType)]"
         case .resource(let resource, _, _):
-            return renderResource(resource, budget: budget)
+            return renderResource(resource: resource, budget: budget)
         case .resourceLink(let uri, let name, let title, _, let mimeType, _):
             return renderResourceLink(uri: uri, name: name, title: title, mimeType: mimeType)
         }
@@ -124,16 +124,16 @@ public enum ToolContentRenderer {
     ///
     /// Text resources are rendered in full, trimmed to `budget`; binary
     /// resources (only a `blob`) are described, not decoded — see
-    /// ``render(_:outputSchema:budget:)``.
+    /// ``render(result:outputSchema:budget:)``.
     ///
     /// - Parameters:
     ///   - resource: The embedded resource to render.
     ///   - budget: The maximum character count before the resource's `text`
-    ///     is trimmed; see ``trimmed(_:budget:)``.
+    ///     is trimmed; see ``trimmed(text:budget:)``.
     /// - Returns: The rendered text for `resource`.
-    private static func renderResource(_ resource: Resource.Content, budget: Int) -> String {
+    private static func renderResource(resource: Resource.Content, budget: Int) -> String {
         if let text = resource.text {
-            return "[resource: \(resource.uri)]\n\(trimmed(text, budget: budget))"
+            return "[resource: \(resource.uri)]\n\(trimmed(text: text, budget: budget))"
         }
         let mimeType = resource.mimeType ?? "application/octet-stream"
         return "[resource: \(resource.uri) (\(mimeType))]"
@@ -141,7 +141,7 @@ public enum ToolContentRenderer {
 
     /// Renders a `.resourceLink` from its own declared fields only.
     ///
-    /// Never fetches `uri` — see ``render(_:outputSchema:budget:)``.
+    /// Never fetches `uri` — see ``render(result:outputSchema:budget:)``.
     private static func renderResourceLink(
         uri: String, name: String, title: String?, mimeType: String?
     ) -> String {
@@ -189,7 +189,7 @@ public enum ToolContentRenderer {
     /// - Returns: `text` unchanged if it is at or under `budget` characters;
     ///   otherwise a `head + marker + tail` excerpt whose marker states
     ///   exactly how many characters of `text` are not shown.
-    private static func trimmed(_ text: String, budget: Int) -> String {
+    private static func trimmed(text: String, budget: Int) -> String {
         let totalCount = text.count
         guard totalCount > budget else { return text }
 
@@ -204,7 +204,7 @@ public enum ToolContentRenderer {
         return head + marker + tail
     }
 
-    /// The elision marker naming `elidedCount`, used by ``trimmed(_:budget:)``.
+    /// The elision marker naming `elidedCount`, used by ``trimmed(text:budget:)``.
     ///
     /// - Parameter elidedCount: The number of characters the marker reports
     ///   as removed.
@@ -218,7 +218,7 @@ public enum ToolContentRenderer {
     /// Renders `structuredContent` as sorted-key JSON, trimmed to `budget`,
     /// under a `"Structured result:"` header, then — when `outputSchema` is
     /// supplied — validates the **untrimmed** value against the **pinned
-    /// shallow-validation subset** documented on ``validate(_:against:)``
+    /// shallow-validation subset** documented on ``validate(value:against:)``
     /// and appends any failures as a `"Note:"` list.
     ///
     /// Validation runs against the original `value`, not the trimmed JSON
@@ -232,13 +232,13 @@ public enum ToolContentRenderer {
     ///   - outputSchema: The tool's declared `outputSchema`, or `nil` to skip
     ///     validation.
     ///   - budget: The maximum character count before the rendered JSON is
-    ///     trimmed; see ``trimmed(_:budget:)``.
+    ///     trimmed; see ``trimmed(text:budget:)``.
     /// - Returns: The rendered `"Structured result:"` section.
     private static func renderStructuredContent(_ value: Value, outputSchema: Value?, budget: Int) -> String {
-        var lines = ["Structured result:", trimmed(jsonString(for: value), budget: budget)]
+        var lines = ["Structured result:", trimmed(text: jsonString(for: value), budget: budget)]
 
         if let outputSchema {
-            let issues = validate(value, against: outputSchema)
+            let issues = validate(value: value, against: outputSchema)
             if !issues.isEmpty {
                 lines.append("Note: structuredContent does not match the declared outputSchema:")
                 lines.append(contentsOf: issues.map { "- \($0)" })
@@ -293,14 +293,12 @@ public enum ToolContentRenderer {
     /// - Returns: Human-readable descriptions of every subset rule violated,
     ///   or an empty array if `value` satisfies all of them (or `schema` is
     ///   not an object node, in which case nothing in the subset applies).
-    private static func validate(_ value: Value, against schema: Value) -> [String] {
+    private static func validate(value: Value, against schema: Value) -> [String] {
         guard case .object(let schemaFields) = schema else { return [] }
         var issues: [String] = []
 
-        if let expectedType = schemaFields["type"]?.stringValue,
-            !matchesType(expectedType, value: value)
-        {
-            issues.append("expected type \"\(expectedType)\", got \"\(jsonType(of: value))\"")
+        if let topLevelIssue = validateTopLevelType(value: value, against: schemaFields) {
+            issues.append(topLevelIssue)
         }
 
         guard case .object(let objectFields) = value else {
@@ -309,40 +307,104 @@ public enum ToolContentRenderer {
             return issues
         }
 
-        if case .array(let requiredValues)? = schemaFields["required"] {
-            for requiredValue in requiredValues {
-                guard let requiredName = requiredValue.stringValue else { continue }
-                if objectFields[requiredName] == nil {
-                    issues.append("missing required property \"\(requiredName)\"")
-                }
+        issues.append(contentsOf: validateRequiredFields(objectFields: objectFields, against: schemaFields))
+        issues.append(contentsOf: validatePropertyTypes(objectFields: objectFields, against: schemaFields))
+        issues.append(contentsOf: validatePropertyEnums(objectFields: objectFields, against: schemaFields))
+
+        return issues
+    }
+
+    /// Validates check 1 of ``validate(value:against:)``'s subset: `value`'s
+    /// top-level JSON type against `schema`'s `type` keyword.
+    ///
+    /// - Parameters:
+    ///   - value: The `structuredContent` value being validated.
+    ///   - schemaFields: `schema`'s own fields, already unwrapped from its `.object` case.
+    /// - Returns: A human-readable "expected type" issue if `schemaFields` declares
+    ///   a `type` that `value` does not match; `nil` if `schemaFields` declares no
+    ///   `type` or `value` satisfies it.
+    private static func validateTopLevelType(value: Value, against schemaFields: [String: Value]) -> String? {
+        guard let expectedType = schemaFields["type"]?.stringValue,
+            !matchesType(typeName: expectedType, against: value)
+        else { return nil }
+        return "expected type \"\(expectedType)\", got \"\(jsonType(of: value))\""
+    }
+
+    /// Validates check 2 of ``validate(value:against:)``'s subset: every name in
+    /// `schema`'s `required` array is a key of `objectFields`.
+    ///
+    /// - Parameters:
+    ///   - objectFields: `value`'s own fields, already unwrapped from its `.object` case.
+    ///   - schemaFields: `schema`'s own fields.
+    /// - Returns: One "missing required property" issue per name in `schemaFields`'s
+    ///   `required` array that is absent from `objectFields`; empty if `schemaFields`
+    ///   declares no `required` array or every name is present.
+    private static func validateRequiredFields(
+        objectFields: [String: Value], against schemaFields: [String: Value]
+    ) -> [String] {
+        guard case .array(let requiredValues)? = schemaFields["required"] else { return [] }
+        return requiredValues.compactMap { requiredValue in
+            guard let requiredName = requiredValue.stringValue, objectFields[requiredName] == nil else {
+                return nil
+            }
+            return "missing required property \"\(requiredName)\""
+        }
+    }
+
+    /// Validates check 3 of ``validate(value:against:)``'s subset: each declared
+    /// property's own `type` keyword, one level deep.
+    ///
+    /// - Parameters:
+    ///   - objectFields: `value`'s own fields, already unwrapped from its `.object` case.
+    ///   - schemaFields: `schema`'s own fields.
+    /// - Returns: One "expected type" issue per property (sorted by name) whose
+    ///   value's JSON type doesn't match its schema's declared `type`; a property
+    ///   absent from `objectFields`, or whose own schema isn't an object node, is
+    ///   skipped. Empty if `schemaFields` declares no `properties`.
+    private static func validatePropertyTypes(
+        objectFields: [String: Value], against schemaFields: [String: Value]
+    ) -> [String] {
+        guard case .object(let propertySchemas)? = schemaFields["properties"] else { return [] }
+        var issues: [String] = []
+        for (propertyName, propertySchemaValue) in propertySchemas.sorted(by: { $0.key < $1.key }) {
+            guard let propertyValue = objectFields[propertyName],
+                case .object(let propertySchemaFields) = propertySchemaValue,
+                let expectedType = propertySchemaFields["type"]?.stringValue,
+                !matchesType(typeName: expectedType, against: propertyValue)
+            else { continue }
+            issues.append(
+                "property \"\(propertyName)\" expected type \"\(expectedType)\", got \"\(jsonType(of: propertyValue))\""
+            )
+        }
+        return issues
+    }
+
+    /// Validates check 4 of ``validate(value:against:)``'s subset: each declared
+    /// property's `enum` membership, in scalar string form.
+    ///
+    /// - Parameters:
+    ///   - objectFields: `value`'s own fields, already unwrapped from its `.object` case.
+    ///   - schemaFields: `schema`'s own fields.
+    /// - Returns: One "is not one of" issue per property (sorted by name) whose
+    ///   value isn't among its schema's declared `enum` members; a property absent
+    ///   from `objectFields`, without a scalar string form, or without a declared
+    ///   `enum`, is skipped. Empty if `schemaFields` declares no `properties`.
+    private static func validatePropertyEnums(
+        objectFields: [String: Value], against schemaFields: [String: Value]
+    ) -> [String] {
+        guard case .object(let propertySchemas)? = schemaFields["properties"] else { return [] }
+        var issues: [String] = []
+        for (propertyName, propertySchemaValue) in propertySchemas.sorted(by: { $0.key < $1.key }) {
+            guard let propertyValue = objectFields[propertyName],
+                case .object(let propertySchemaFields) = propertySchemaValue,
+                case .array(let enumValues)? = propertySchemaFields["enum"],
+                let actual = scalarString(value: propertyValue)
+            else { continue }
+            let allowed = enumValues.compactMap { scalarString(value: $0) }
+            if !allowed.contains(actual) {
+                issues.append("property \"\(propertyName)\" value \"\(actual)\" is not one of \(allowed)")
             }
         }
-
-        if case .object(let propertySchemas)? = schemaFields["properties"] {
-            for (propertyName, propertySchemaValue) in propertySchemas.sorted(by: { $0.key < $1.key }) {
-                guard let propertyValue = objectFields[propertyName],
-                    case .object(let propertySchemaFields) = propertySchemaValue
-                else { continue }
-
-                if let expectedType = propertySchemaFields["type"]?.stringValue,
-                    !matchesType(expectedType, value: propertyValue)
-                {
-                    issues.append(
-                        "property \"\(propertyName)\" expected type \"\(expectedType)\", got \"\(jsonType(of: propertyValue))\""
-                    )
-                }
-
-                if case .array(let enumValues)? = propertySchemaFields["enum"] {
-                    let allowed = enumValues.compactMap(scalarString)
-                    if let actual = scalarString(propertyValue), !allowed.contains(actual) {
-                        issues.append(
-                            "property \"\(propertyName)\" value \"\(actual)\" is not one of \(allowed)"
-                        )
-                    }
-                }
-            }
-        }
-
         return issues
     }
 
@@ -358,7 +420,7 @@ public enum ToolContentRenderer {
     /// ``jsonType(of:)`` uses to name a value's canonical type, reused here
     /// to test membership against a schema-declared type name instead of a
     /// parallel switch.
-    private static func matchesType(_ typeName: String, value: Value) -> Bool {
+    private static func matchesType(typeName: String, against value: Value) -> Bool {
         guard let entry = jsonTypeTable.first(where: { $0.name == typeName }) else {
             return true
         }
@@ -366,7 +428,7 @@ public enum ToolContentRenderer {
     }
 
     /// The JSON Schema primitive type name for `value`'s case, used to
-    /// report a ``matchesType(_:value:)`` mismatch.
+    /// report a ``matchesType(typeName:against:)`` mismatch.
     ///
     /// Looked up from ``jsonTypeTable`` instead of a switch, since every
     /// case differs only in the constant type-name string it maps to.
@@ -384,13 +446,13 @@ public enum ToolContentRenderer {
     ///
     /// Shared by both consumers: ``jsonType(of:)`` takes the first entry
     /// whose `matches` predicate accepts a value, in table order, to get
-    /// its canonical type name; ``matchesType(_:value:)`` looks up the
+    /// its canonical type name; ``matchesType(typeName:against:)`` looks up the
     /// entry by `name` and evaluates its `matches` predicate against a
     /// schema-declared type name instead.
     ///
     /// `"number"` also matches `.int` (in addition to `"integer"`'s own
     /// entry) so an `.int` value satisfies both, per
-    /// ``matchesType(_:value:)``; `.int` still resolves to the canonical
+    /// ``matchesType(typeName:against:)``; `.int` still resolves to the canonical
     /// name `"integer"` in ``jsonType(of:)`` because `"integer"` is checked
     /// first. `"string"` also matches `.data` — which decodes from a JSON
     /// string (a data URL) — so it is reported as `"string"` too.
@@ -409,7 +471,7 @@ public enum ToolContentRenderer {
     ///
     /// Non-scalar values (array/object/null/data) have no defined enum
     /// representation and return `nil`.
-    private static func scalarString(_ value: Value) -> String? {
+    private static func scalarString(value: Value) -> String? {
         switch value {
         case .string(let string): return string
         case .int(let int): return String(describing: int)
