@@ -35,28 +35,30 @@ comments:
 
     Task is complete and green. Leaving in `doing` for `/review` per the implement workflow.
   timestamp: 2026-07-04T23:05:02.890357+00:00
+- actor: claude-code
+  id: 01kwqps0r66fmn004qe3z9hewm
+  text: |-
+    Fixed review finding: replaced the `try!` in ToolDescriptor.computeFingerprint(name:inputSchema:annotations:) with `guard let data = try? encoder.encode(payload) else { fatalError("...") }`, per the finding's suggested pattern.
+
+    Investigated whether the encode is genuinely un-throwable before choosing fatalError over making the function throws: FingerprintPayload's three fields are `String` (never throws), `MCP.Value` (an enum whose `encode(to:)` recursively calls `container.encode(...)` on Bool/Int/Double/String/[Value]/[String:Value] — no custom throwing logic beyond what JSONEncoder itself does), and `MCP.Tool.Annotations` (a plain Codable struct of `String?`/`Bool?` properties, compiler-synthesized, no custom encode(to:)). The only real throwing path for any of this is a non-conforming Double (NaN/Infinity), which the encoder already defuses via `nonConformingFloatEncodingStrategy = .convertToString(...)` set two lines above. So this is genuinely a "can't happen" case — fatalError with an explanatory message is appropriate here rather than propagating `throws` up through `computeFingerprint` → the two `ToolDescriptor` initializers → every caller, which would spread a non-real error case across the whole call chain for no benefit.
+
+    grepped the full Sources/ and Tests/ trees for other `try!` occurrences — this was the only one.
+
+    Verification: `swift build` clean (0 warnings/errors). `swift test` → 164/164 green across 16 suites, no regressions. Checked off the review finding item.
+
+    Spawned double-check adversarial review to verify the fix and the "un-throwable" reasoning independently; awaiting verdict. Leaving task in `doing` per the implement workflow.
+  timestamp: 2026-07-04T23:17:48.422694+00:00
+- actor: claude-code
+  id: 01kwqpv2gar02ztyy40zh6qdpe
+  text: |-
+    Double-check adversarial review verdict: PASS, no findings. Independently re-verified: zero `try!` remaining in Sources/Tests, the "cannot throw" reasoning (MCP.Value.encode(to:) and MCP.Tool.Annotations's synthesized Codable have no throwing path besides non-conforming Double, which is defused), swift build clean, swift test 164/164 green, and diff scoped to exactly the one fix in ToolCatalog.swift.
+
+    Task is complete and green. Leaving in `doing` for `/review`.
+  timestamp: 2026-07-04T23:18:55.754379+00:00
 depends_on:
 - 01KWMS0RQH4YWDJGDAVR1M7FAY
 position_column: doing
 position_ordinal: '80'
 title: 'ToolCatalog value types: snapshot, epoch, fingerprints, annotations'
 ---
-## What
-Create `Sources/FoundationModelsMCP/ToolCatalog.swift` with plain `Sendable` value types per plan.md Dynamic discovery: `ServerIdentity`; `ToolDescriptor` (name, `title`, description, **raw `inputSchema` verbatim**, converted `GenerationSchema`, `ToolAnnotations` — readOnly/destructive/idempotent/openWorld hints — and icons, plus a **fingerprint** = stable hash of name + raw inputSchema + annotations); `ToolCatalog` (server identity, per-server **epoch**, server state, `[ToolDescriptor]`) with a `diff(from:)` helper (added/removed/changed-by-fingerprint). Expose `MCPServer.catalog` returning the current snapshot.
-
-- [ ] Sendable value types: ServerIdentity, ToolDescriptor, ToolCatalog
-- [ ] Fingerprint: stable across runs, changes when raw schema or annotations change
-- [ ] diff(from:) helper (added/removed/changed)
-- [ ] MCPServer.catalog current-snapshot accessor
-
-## Acceptance Criteria
-- [ ] Fingerprint equal for identical descriptors, different when only the inputSchema changes (same name)
-- [ ] diff correctly classifies add/remove/change across two snapshots
-- [ ] All types compile as Sendable with no reference-type leakage
-
-## Tests
-- [ ] `Tests/FoundationModelsMCPTests/CatalogTypeTests.swift`: fingerprint stability/sensitivity, diff classification, Sendable conformance (compile-time)
-- [ ] `swift test --filter CatalogType` green
-
-## Workflow
-- Use `/tdd` — write failing tests first, then implement to make them pass.
+## What\nCreate `Sources/FoundationModelsMCP/ToolCatalog.swift` with plain `Sendable` value types per plan.md Dynamic discovery: `ServerIdentity`; `ToolDescriptor` (name, `title`, description, **raw `inputSchema` verbatim**, converted `GenerationSchema`, `ToolAnnotations` — readOnly/destructive/idempotent/openWorld hints — and icons, plus a **fingerprint** = stable hash of name + raw inputSchema + annotations); `ToolCatalog` (server identity, per-server **epoch**, server state, `[ToolDescriptor]`) with a `diff(from:)` helper (added/removed/changed-by-fingerprint). Expose `MCPServer.catalog` returning the current snapshot.\n\n- [ ] Sendable value types: ServerIdentity, ToolDescriptor, ToolCatalog\n- [ ] Fingerprint: stable across runs, changes when raw schema or annotations change\n- [ ] diff(from:) helper (added/removed/changed)\n- [ ] MCPServer.catalog current-snapshot accessor\n\n## Acceptance Criteria\n- [ ] Fingerprint equal for identical descriptors, different when only the inputSchema changes (same name)\n- [ ] diff correctly classifies add/remove/change across two snapshots\n- [ ] All types compile as Sendable with no reference-type leakage\n\n## Tests\n- [ ] `Tests/FoundationModelsMCPTests/CatalogTypeTests.swift`: fingerprint stability/sensitivity, diff classification, Sendable conformance (compile-time)\n- [ ] `swift test --filter CatalogType` green\n\n## Workflow\n- Use `/tdd` — write failing tests first, then implement to make them pass.\n\n## Review Findings (2026-07-04 18:08)\n\n- [x] `Sources/FoundationModelsMCP/ToolCatalog.swift:156` — Uses `try!` in production code. The error-handling rule mandates 'No `try!` in non-test code' with exceptions only for compile-time-constant literals that can fail solely through programmer error (e.g., a regex literal). Runtime encoder operations do not qualify, even if configured not to throw. Replace with `guard let data = try? encoder.encode(payload) else { fatalError(\"Encoder configured with convertToString strategy should never throw\") }` to make error handling explicit and follow the rule.\n

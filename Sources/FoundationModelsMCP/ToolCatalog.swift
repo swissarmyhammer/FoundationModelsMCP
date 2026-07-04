@@ -165,7 +165,12 @@ public struct ToolDescriptor: Sendable {
         encoder.nonConformingFloatEncodingStrategy = .convertToString(
             positiveInfinity: "Infinity", negativeInfinity: "-Infinity", nan: "NaN")
         let payload = FingerprintPayload(name: name, inputSchema: inputSchema, annotations: annotations)
-        let data = try! encoder.encode(payload)
+        guard let data = try? encoder.encode(payload) else {
+            fatalError(
+                "FingerprintPayload encoding should never throw: name and inputSchema/annotations "
+                    + "are plain value types with no custom encode(to:), and the only throwing path "
+                    + "(non-conforming Double) is defused by .convertToString above")
+        }
         let digest = SHA256.hash(data: data)
         return digest.map { String(format: "%02x", $0) }.joined()
     }
