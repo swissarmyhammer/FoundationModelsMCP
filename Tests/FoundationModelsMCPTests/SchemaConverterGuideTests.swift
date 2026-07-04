@@ -40,6 +40,15 @@ struct SchemaConverterGuideTests {
     /// A test-only sink that collects every ``SchemaConversionLogRecord`` reported
     /// during a `SchemaConverter.parse(_:name:onDrop:)` call, so tests can assert
     /// on exactly what was logged.
+    ///
+    /// `@unchecked Sendable` synchronization invariant: the mutable `records`
+    /// array is only ever *mutated* while holding `lock` — `handler()`'s
+    /// closure locks before every `append`, so concurrent `onDrop`
+    /// invocations from `SchemaConverter.parse` cannot race on the backing
+    /// storage. The `records` property's own getter is not separately
+    /// synchronized; tests only read it after `parse(_:name:onDrop:)` has
+    /// already returned, i.e. once all `handler()` calls have completed, so
+    /// no read ever overlaps a concurrent write.
     private final class LogRecorder: @unchecked Sendable {
         private(set) var records: [SchemaConversionLogRecord] = []
         private let lock = NSLock()

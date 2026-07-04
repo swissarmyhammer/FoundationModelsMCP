@@ -33,28 +33,23 @@ comments:
 
     Leaving in `doing` per /implement's contract — ready for /review.
   timestamp: 2026-07-04T12:39:58.012245+00:00
+- actor: claude-code
+  id: 01kwpk0crgzcrb8gq6rmd7fv08
+  text: |-
+    Fixed both review findings.
+
+    1. Extracted `combinedBound(inclusive:exclusive:isInteger:selectMaximum:)` in SchemaConverter.swift, replacing `combinedMinimum`/`combinedMaximum`. `selectMaximum` picks the nudge direction (`+` for minimum, `-` for maximum) and the stricter-comparison (`max` for minimum, `min` for maximum) via a small local `stricter(_:_:)` helper — a direct `selectMaximum ? min : max` ternary hit a Swift compiler diagnostic-emission bug ("failed to produce diagnostic for expression") on generic `min`/`max` overloads, so it's expressed as a named local function instead. Both call sites in `applyNumericRangeGuide` updated (`selectMaximum: false` for minimum, `true` for maximum). All pre-existing minimum/maximum combination tests (inclusive-only, exclusive-only, both-present-stricter-wins, crossed-bounds) continue to pass unchanged, proving behavior preservation.
+
+    2. Added a doc comment on `LogRecorder`'s `@unchecked Sendable` in SchemaConverterGuideTests.swift.
+
+    Adversarial double-check (via /really-done) caught that my first version of the doc comment overclaimed: it said reads of `records` were "serialized through NSLock", but the synthesized property getter isn't locked — only `handler()`'s append is. Reworded to state the accurate invariant: mutation is lock-protected, and test reads are safe only because they happen after `parse(...)` (and thus all `handler()` calls) has already returned, never concurrently with a write.
+
+    Verification: `swift build` exit 0, zero warnings. `swift test` — 81/81 pass across 6 suites. Leaving in `doing` per /implement's contract — ready for /review.
+  timestamp: 2026-07-04T12:52:41.360108+00:00
 depends_on:
 - 01KWMRYXFKKEW3QDHEFF7Z2QB4
 position_column: doing
 position_ordinal: '80'
 title: 'SchemaConverter: runtime GenerationGuides + fallback policy with logging'
 ---
-## What
-Extend `SchemaConverter` with constraint mapping per plan.md, expressed as **guide specs in the SchemaIR** (assertable) and emitted as runtime `GenerationGuide`s: `enum`→`anyOf`, `minimum`/`maximum`→`range`/`minimum`/`maximum` (`Decimal`; document `exclusiveMinimum`/`exclusiveMaximum` handling), `pattern`→best-effort ECMA-262 → Swift `Regex` compile (on failure: description-hint fallback), `minItems`/`maxItems`→count guides (pin nested-array behavior with a test). Unsupported constructs (`anyOf`/`oneOf` unions, `additionalProperties`, `patternProperties`, tuples, `not`, recursive `$ref`) degrade to a permissive IR node and **log what was dropped** (keyword + JSON path) — never silently misrepresent.
-
-- [x] Guide specs in IR: enum/range/pattern/count
-- [x] pattern best-effort with logged fallback
-- [x] Unsupported constructs → permissive IR + one log record each
-- [x] exclusive bounds + Decimal conversion documented
-
-## Acceptance Criteria
-- [x] Corpus schemas with enum/min/max/minItems/pattern produce the expected guide specs in the IR
-- [x] Invalid regex pattern falls back without throwing and emits a log record
-- [x] Every dropped construct emits exactly one log record naming keyword and path
-
-## Tests
-- [x] `Tests/FoundationModelsMCPTests/SchemaConverterGuideTests.swift`: IR guide-spec assertions per fixture; fallback logging via injected log handler; nested-array count pin; emission smoke test
-- [x] `swift test --filter SchemaConverterGuide` green
-
-## Workflow
-- Use `/tdd` — write failing tests first, then implement to make them pass.
+## What\nExtend `SchemaConverter` with constraint mapping per plan.md, expressed as **guide specs in the SchemaIR** (assertable) and emitted as runtime `GenerationGuide`s: `enum`→`anyOf`, `minimum`/`maximum`→`range`/`minimum`/`maximum` (`Decimal`; document `exclusiveMinimum`/`exclusiveMaximum` handling), `pattern`→best-effort ECMA-262 → Swift `Regex` compile (on failure: description-hint fallback), `minItems`/`maxItems`→count guides (pin nested-array behavior with a test). Unsupported constructs (`anyOf`/`oneOf` unions, `additionalProperties`, `patternProperties`, tuples, `not`, recursive `$ref`) degrade to a permissive IR node and **log what was dropped** (keyword + JSON path) — never silently misrepresent.\n\n- [x] Guide specs in IR: enum/range/pattern/count\n- [x] pattern best-effort with logged fallback\n- [x] Unsupported constructs → permissive IR + one log record each\n- [x] exclusive bounds + Decimal conversion documented\n\n## Acceptance Criteria\n- [x] Corpus schemas with enum/min/max/minItems/pattern produce the expected guide specs in the IR\n- [x] Invalid regex pattern falls back without throwing and emits a log record\n- [x] Every dropped construct emits exactly one log record naming keyword and path\n\n## Tests\n- [x] `Tests/FoundationModelsMCPTests/SchemaConverterGuideTests.swift`: IR guide-spec assertions per fixture; fallback logging via injected log handler; nested-array count pin; emission smoke test\n- [x] `swift test --filter SchemaConverterGuide` green\n\n## Workflow\n- Use `/tdd` — write failing tests first, then implement to make them pass.\n\n## Review Findings (2026-07-04 07:42)\n\n- [x] `Sources/FoundationModelsMCP/SchemaConverter.swift:298` — combinedMinimum and combinedMaximum are near-verbatim copies differing only by the operation direction and comparison function. Two blocks that differ only by literal values are one function with parameters. Extract a single parameterized function `combinedBound(inclusive:exclusive:isInteger:selectMaximum:Bool)` that uses the Bool to choose the operation direction (+/−) and comparison function (max/min).\n- [x] `Tests/FoundationModelsMCPTests/SchemaConverterGuideTests.swift:23` — @unchecked Sendable requires a documented synchronization invariant — the LogRecorder class uses NSLock to protect access to records, but this invariant must be stated in a comment so future readers understand why @unchecked is safe. Add a comment above or inside the class documenting the synchronization invariant, e.g. `// Mutable records array is protected by lock — access is serialized via NSLock.`.\n

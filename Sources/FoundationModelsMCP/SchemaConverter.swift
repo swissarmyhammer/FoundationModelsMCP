@@ -393,14 +393,14 @@ public enum SchemaConverter {
         to base: SchemaIR, fields: [String: Value], path: String, onDrop: SchemaConversionLogHandler
     ) -> SchemaIR {
         let isInteger = base == .integer
-        let minimum = combinedMinimum(
+        let minimum = combinedBound(
             inclusive: decimalValue(fields["minimum"]),
             exclusive: decimalValue(fields["exclusiveMinimum"]),
-            isInteger: isInteger)
-        let maximum = combinedMaximum(
+            isInteger: isInteger, selectMaximum: false)
+        let maximum = combinedBound(
             inclusive: decimalValue(fields["maximum"]),
             exclusive: decimalValue(fields["exclusiveMaximum"]),
-            isInteger: isInteger)
+            isInteger: isInteger, selectMaximum: true)
         guard minimum != nil || maximum != nil else { return base }
         // A schema whose bounds cross once exclusive bounds are nudged inward
         // (e.g. `exclusiveMinimum: 5, exclusiveMaximum: 6` on an integer, or
@@ -415,34 +415,31 @@ public enum SchemaConverter {
         return .guided(base: base, guide: .numericRange(minimum: minimum, maximum: maximum))
     }
 
-    /// Combines an inclusive `minimum` with a nudged-inward `exclusiveMinimum`, taking the stricter (greater) of the two when both are present.
+    /// Combines an inclusive bound (`minimum`/`maximum`) with its nudged-inward exclusive counterpart (`exclusiveMinimum`/`exclusiveMaximum`), taking the stricter of the two when both are present.
+    ///
+    /// Minimum and maximum combination are mirror images of each other: a
+    /// minimum nudges its exclusive form *up* and prefers the *greater*
+    /// (stricter) value, while a maximum nudges *down* and prefers the
+    /// *lesser* (stricter) value. `selectMaximum` picks which mirror to
+    /// apply so both call sites (``applyNumericRangeGuide(to:fields:path:onDrop:)``)
+    /// share one implementation instead of two near-identical copies.
     ///
     /// - Parameters:
-    ///   - inclusive: The JSON Schema `minimum` value, if present.
-    ///   - exclusive: The JSON Schema `exclusiveMinimum` value, if present.
+    ///   - inclusive: The JSON Schema `minimum`/`maximum` value, if present.
+    ///   - exclusive: The JSON Schema `exclusiveMinimum`/`exclusiveMaximum` value, if present.
     ///   - isInteger: Whether the constrained base is `.integer` (nudged by `1`) rather than `.number` (nudged by ``numberExclusiveBoundEpsilon``).
-    /// - Returns: The effective inclusive minimum, or `nil` if neither was present.
-    private static func combinedMinimum(inclusive: Decimal?, exclusive: Decimal?, isInteger: Bool) -> Decimal? {
-        let nudged = exclusive.map { $0 + (isInteger ? 1 : numberExclusiveBoundEpsilon) }
-        switch (inclusive, nudged) {
-        case (let inclusive?, let nudged?): return max(inclusive, nudged)
-        case (let inclusive?, nil): return inclusive
-        case (nil, let nudged?): return nudged
-        case (nil, nil): return nil
+    ///   - selectMaximum: `false` to combine a minimum (nudge up, prefer greater); `true` to combine a maximum (nudge down, prefer lesser).
+    /// - Returns: The effective inclusive bound, or `nil` if neither `inclusive` nor `exclusive` was present.
+    private static func combinedBound(
+        inclusive: Decimal?, exclusive: Decimal?, isInteger: Bool, selectMaximum: Bool
+    ) -> Decimal? {
+        let nudgeMagnitude = isInteger ? 1 : numberExclusiveBoundEpsilon
+        let nudged = exclusive.map { selectMaximum ? $0 - nudgeMagnitude : $0 + nudgeMagnitude }
+        func stricter(_ lhs: Decimal, _ rhs: Decimal) -> Decimal {
+            selectMaximum ? min(lhs, rhs) : max(lhs, rhs)
         }
-    }
-
-    /// Combines an inclusive `maximum` with a nudged-inward `exclusiveMaximum`, taking the stricter (lesser) of the two when both are present.
-    ///
-    /// - Parameters:
-    ///   - inclusive: The JSON Schema `maximum` value, if present.
-    ///   - exclusive: The JSON Schema `exclusiveMaximum` value, if present.
-    ///   - isInteger: Whether the constrained base is `.integer` (nudged by `1`) rather than `.number` (nudged by ``numberExclusiveBoundEpsilon``).
-    /// - Returns: The effective inclusive maximum, or `nil` if neither was present.
-    private static func combinedMaximum(inclusive: Decimal?, exclusive: Decimal?, isInteger: Bool) -> Decimal? {
-        let nudged = exclusive.map { $0 - (isInteger ? 1 : numberExclusiveBoundEpsilon) }
         switch (inclusive, nudged) {
-        case (let inclusive?, let nudged?): return min(inclusive, nudged)
+        case (let inclusive?, let nudged?): return stricter(inclusive, nudged)
         case (let inclusive?, nil): return inclusive
         case (nil, let nudged?): return nudged
         case (nil, nil): return nil
