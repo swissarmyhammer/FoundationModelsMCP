@@ -288,6 +288,42 @@ struct RendererTests {
         #expect(!rendered.contains("Note"))
     }
 
+    @Test("an Int structuredContent value satisfies a number-typed schema")
+    func intValueMatchesNumberSchemaType() {
+        // `matchesType` looks up its `"number"` entry by name, independent of
+        // `jsonType(of:)`'s first-match ordering that reports `.int` as
+        // `"integer"` — the two must still agree that an `.int` satisfies a
+        // `"number"` schema, or this would regress to a false "expected type
+        // number, got integer" note.
+        let schema: Value = .object([
+            "type": .string("object"),
+            "properties": .object([
+                "count": .object(["type": .string("number")])
+            ]),
+        ])
+        let structured: Value = .object(["count": .int(3)])
+        let result = CallTool.Result(content: [], structuredContent: structured as Value?)
+        let rendered = ToolContentRenderer.render(result, outputSchema: schema)
+        #expect(!rendered.contains("Note"))
+    }
+
+    @Test("a Double structuredContent value does not satisfy an integer-typed schema")
+    func doubleValueDoesNotMatchIntegerSchemaType() {
+        // The inverse of `intValueMatchesNumberSchemaType`: `"integer"` must
+        // stay narrower than `"number"` and reject a `.double` value.
+        let schema: Value = .object([
+            "type": .string("object"),
+            "properties": .object([
+                "count": .object(["type": .string("integer")])
+            ]),
+        ])
+        let structured: Value = .object(["count": .double(3.5)])
+        let result = CallTool.Result(content: [], structuredContent: structured as Value?)
+        let rendered = ToolContentRenderer.render(result, outputSchema: schema)
+        #expect(rendered.contains("Note"))
+        #expect(rendered.contains("expected type \"integer\", got \"number\""))
+    }
+
     // MARK: - Composition
 
     @Test("content, isError, and structuredContent compose in one rendered result")

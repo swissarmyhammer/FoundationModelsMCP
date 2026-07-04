@@ -238,40 +238,16 @@ public enum ToolContentRenderer {
     /// `.double` value only satisfies `"number"`. An unrecognized
     /// `typeName` is outside the validated subset and is treated as
     /// satisfied (never a failure).
+    ///
+    /// Looked up from ``jsonTypeTable`` by name — the same table
+    /// ``jsonType(of:)`` uses to name a value's canonical type, reused here
+    /// to test membership against a schema-declared type name instead of a
+    /// parallel switch.
     private static func matchesType(_ typeName: String, value: Value) -> Bool {
-        switch typeName {
-        case "object":
-            if case .object = value { return true }
-            return false
-        case "array":
-            if case .array = value { return true }
-            return false
-        case "string":
-            // `.data` decodes from a JSON string (a data URL) and is
-            // reported as `"string"` by `jsonType(of:)`, so it must match
-            // here too — otherwise a `.data` value under a `"string"`
-            // schema would produce the self-contradictory note "expected
-            // type string, got string".
-            switch value {
-            case .string, .data: return true
-            default: return false
-            }
-        case "integer":
-            if case .int = value { return true }
-            return false
-        case "number":
-            switch value {
-            case .int, .double: return true
-            default: return false
-            }
-        case "boolean":
-            if case .bool = value { return true }
-            return false
-        case "null":
-            return value.isNull
-        default:
+        guard let entry = jsonTypeTable.first(where: { $0.name == typeName }) else {
             return true
         }
+        return entry.matches(value)
     }
 
     /// The JSON Schema primitive type name for `value`'s case, used to
@@ -286,21 +262,31 @@ public enum ToolContentRenderer {
         return entry.name
     }
 
-    /// `Value` case → JSON Schema primitive type name, checked in order
-    /// using the case-testing accessors `Value` already exposes (`isNull`,
-    /// `boolValue`, `intValue`, etc.) instead of pattern-matching again.
+    /// `Value` case → JSON Schema primitive type name and membership test,
+    /// checked in order using the case-testing accessors `Value` already
+    /// exposes (`isNull`, `boolValue`, `intValue`, etc.) instead of
+    /// pattern-matching again.
     ///
-    /// `.data` decodes from a JSON string (a data URL), so it is reported
-    /// as `"string"` — see ``matchesType(_:value:)`` for why that matters.
-    private static let jsonTypeTable: [(matches: @Sendable (Value) -> Bool, name: String)] = [
-        ({ $0.isNull }, "null"),
-        ({ $0.boolValue != nil }, "boolean"),
-        ({ $0.intValue != nil }, "integer"),
-        ({ $0.doubleValue != nil }, "number"),
-        ({ $0.stringValue != nil }, "string"),
-        ({ $0.dataValue != nil }, "string"),
-        ({ $0.arrayValue != nil }, "array"),
-        ({ $0.objectValue != nil }, "object"),
+    /// Shared by both consumers: ``jsonType(of:)`` takes the first entry
+    /// whose `matches` predicate accepts a value, in table order, to get
+    /// its canonical type name; ``matchesType(_:value:)`` looks up the
+    /// entry by `name` and evaluates its `matches` predicate against a
+    /// schema-declared type name instead.
+    ///
+    /// `"number"` also matches `.int` (in addition to `"integer"`'s own
+    /// entry) so an `.int` value satisfies both, per
+    /// ``matchesType(_:value:)``; `.int` still resolves to the canonical
+    /// name `"integer"` in ``jsonType(of:)`` because `"integer"` is checked
+    /// first. `"string"` also matches `.data` — which decodes from a JSON
+    /// string (a data URL) — so it is reported as `"string"` too.
+    private static let jsonTypeTable: [(name: String, matches: @Sendable (Value) -> Bool)] = [
+        ("null", { $0.isNull }),
+        ("boolean", { $0.boolValue != nil }),
+        ("integer", { $0.intValue != nil }),
+        ("number", { $0.intValue != nil || $0.doubleValue != nil }),
+        ("string", { $0.stringValue != nil || $0.dataValue != nil }),
+        ("array", { $0.arrayValue != nil }),
+        ("object", { $0.objectValue != nil }),
     ]
 
     /// Renders any scalar `Value` (string/int/double/bool) to its string
