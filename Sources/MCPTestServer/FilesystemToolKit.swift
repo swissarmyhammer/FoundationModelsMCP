@@ -17,6 +17,9 @@ public actor VirtualFilesystem {
     }
 
     /// Every path currently stored, sorted for deterministic listing.
+    ///
+    /// - Returns: All paths currently stored, sorted for deterministic
+    ///   listing.
     public func listPaths() -> [String] {
         files.keys.sorted()
     }
@@ -55,7 +58,7 @@ extension ScriptedServer {
         addFilesystemTool(
             name: "list_files",
             description: "Lists every path in the virtual filesystem.",
-            inputSchema: JSONSchemaBuilder.object(properties: [:])
+            inputSchema: JSONSchemaBuilder.emptySchema
         ) { _ in
             let paths = await filesystem.listPaths()
             return CallTool.Result(

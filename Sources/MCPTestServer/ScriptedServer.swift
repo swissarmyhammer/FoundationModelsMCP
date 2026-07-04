@@ -30,6 +30,34 @@ public actor ScriptedServer {
     /// same wording.
     private static let deallocatedErrorMessage = "ScriptedServer deallocated"
 
+    /// Runs `body` with the resolved, non-optional instance from a
+    /// `[weak self]` capture, throwing ``deallocatedErrorMessage`` first if
+    /// the server has already been deallocated — shared by every
+    /// handler/tool-handler closure below that captures `self` weakly to
+    /// avoid a retain cycle with the wrapped `MCP.Server`.
+    ///
+    /// (Swift only permits the `guard let self else { ... }`/`if let self`
+    /// self-shadowing sugar as an optional-binding condition, not as a plain
+    /// `let self = ...` assignment, so the resolved instance is threaded
+    /// through as an ordinary parameter instead of rebound to `self`.)
+    ///
+    /// - Parameters:
+    ///   - weakSelf: The closure's captured `self`, already an optional
+    ///     courtesy of `[weak self]`.
+    ///   - body: Runs with the resolved, non-optional server instance.
+    /// - Returns: Whatever `body` returns.
+    /// - Throws: `MCPError.internalError(deallocatedErrorMessage)` if
+    ///   `weakSelf` is `nil`; otherwise whatever `body` throws.
+    private static func withResolvedSelf<T>(
+        _ weakSelf: ScriptedServer?,
+        _ body: (ScriptedServer) async throws -> T
+    ) async throws -> T {
+        guard let weakSelf else {
+            throw MCPError.internalError(deallocatedErrorMessage)
+        }
+        return try await body(weakSelf)
+    }
+
     /// The wrapped swift-sdk server that actually speaks the MCP protocol.
     private let server: MCP.Server
 
@@ -104,13 +132,15 @@ public actor ScriptedServer {
 
     private func registerHandlers() async {
         await server.withMethodHandler(ListTools.self) { [weak self] params in
-            guard let self else { throw MCPError.internalError(Self.deallocatedErrorMessage) }
-            return await self.listToolsPage(cursor: params.cursor)
+            try await Self.withResolvedSelf(self) { instance in
+                await instance.listToolsPage(cursor: params.cursor)
+            }
         }
 
         await server.withMethodHandler(CallTool.self) { [weak self] params in
-            guard let self else { throw MCPError.internalError(Self.deallocatedErrorMessage) }
-            return try await self.dispatchCallTool(params)
+            try await Self.withResolvedSelf(self) { instance in
+                try await instance.dispatchCallTool(params)
+            }
         }
 
         await server.onNotification(CancelledNotification.self) { [weak self] message in
@@ -198,6 +228,8 @@ public actor ScriptedServer {
     // MARK: - tools/list_changed (scenario 4)
 
     /// Sends one `notifications/tools/list_changed` notification.
+    ///
+    /// - Throws: Whatever `MCP.Server.notify(_:)` throws.
     public func emitToolListChanged() async throws {
         try await server.notify(ToolListChangedNotification.message())
     }
@@ -206,6 +238,8 @@ public actor ScriptedServer {
     /// to back, with no delay between them — scripting a "rapid burst."
     ///
     /// - Parameter count: How many notifications to send.
+    /// - Throws: Whatever the first failing ``emitToolListChanged()`` call
+    ///   throws; the burst stops at that point.
     public func emitToolListChangedBurst(count: Int) async throws {
         for _ in 0..<count {
             try await emitToolListChanged()
@@ -234,29 +268,27 @@ public actor ScriptedServer {
         let definition = MCP.Tool(
             name: name,
             description: "Reports progress over \(totalSteps) steps before completing.",
-            inputSchema: JSONSchemaBuilder.object(properties: [:])
+            inputSchema: JSONSchemaBuilder.emptySchema
         )
         let handler: @Sendable (CallTool.Parameters) async throws -> CallTool.Result = {
             [weak self] params in
-            guard let self else { throw MCPError.internalError(Self.deallocatedErrorMessage) }
-            if let token = params._meta?.progressToken {
-                for step in 1...totalSteps {
-                    try await self.sendProgress(
-                        token: token, progress: Double(step), total: Double(totalSteps))
-                    try await Task.sleep(for: stepDelay)
+            try await Self.withResolvedSelf(self) { instance in
+                if let token = params._meta?.progressToken {
+                    for step in 1...totalSteps {
+                        try await instance.server.notify(
+                            ProgressNotification.message(
+                                .init(
+                                    progressToken: token, progress: Double(step),
+                                    total: Double(totalSteps))))
+                        try await Task.sleep(for: stepDelay)
+                    }
+                } else {
+                    try await Task.sleep(for: stepDelay * totalSteps)
                 }
-            } else {
-                try await Task.sleep(for: stepDelay * totalSteps)
+                return CallTool.Result(content: [.text(text: "done", annotations: nil, _meta: nil)])
             }
-            return CallTool.Result(content: [.text(text: "done", annotations: nil, _meta: nil)])
         }
         addTool(ScriptedTool(definition: definition, handler: handler))
-    }
-
-    private func sendProgress(token: ProgressToken, progress: Double, total: Double?) async throws {
-        try await server.notify(
-            ProgressNotification.message(
-                .init(progressToken: token, progress: progress, total: total)))
     }
 
     // MARK: - Elicitation (scenario 8)
@@ -277,21 +309,23 @@ public actor ScriptedServer {
         let definition = MCP.Tool(
             name: name,
             description: "Elicits user input mid-call and echoes it back.",
-            inputSchema: JSONSchemaBuilder.object(properties: [:])
+            inputSchema: JSONSchemaBuilder.emptySchema
         )
         let handler: @Sendable (CallTool.Parameters) async throws -> CallTool.Result = {
             [weak self] _ in
-            guard let self else { throw MCPError.internalError(Self.deallocatedErrorMessage) }
-            let result = try await self.server.requestElicitation(
-                message: message, requestedSchema: requestedSchema)
-            let structuredContent: Value? = result.content.map(Value.object)
-            return CallTool.Result(
-                content: [
-                    .text(
-                        text: "elicitation \(result.action.rawValue)", annotations: nil, _meta: nil)
-                ],
-                structuredContent: structuredContent
-            )
+            try await Self.withResolvedSelf(self) { instance in
+                let result = try await instance.server.requestElicitation(
+                    message: message, requestedSchema: requestedSchema)
+                let structuredContent: Value? = result.content.map(Value.object)
+                return CallTool.Result(
+                    content: [
+                        .text(
+                            text: "elicitation \(result.action.rawValue)", annotations: nil,
+                            _meta: nil)
+                    ],
+                    structuredContent: structuredContent
+                )
+            }
         }
         addTool(ScriptedTool(definition: definition, handler: handler))
     }
@@ -309,19 +343,38 @@ public actor ScriptedServer {
         let definition = MCP.Tool(
             name: name,
             description: "Drops the transport connection mid-call.",
-            inputSchema: JSONSchemaBuilder.object(properties: [:])
+            inputSchema: JSONSchemaBuilder.emptySchema
         )
         let handler: @Sendable (CallTool.Parameters) async throws -> CallTool.Result = {
             [weak self] _ in
-            guard let self else { throw MCPError.internalError(Self.deallocatedErrorMessage) }
-            await self.dropTransport()
-            throw MCPError.connectionClosed
+            try await Self.withResolvedSelf(self) { instance in
+                await instance.dropTransport()
+                throw MCPError.connectionClosed
+            }
         }
         addTool(ScriptedTool(definition: definition, handler: handler))
     }
 
     // MARK: - Recorded notifications (scenario 10)
 
+    /// Appends one recorded notification.
+    ///
+    /// Not a trivial single-call-site wrapper despite the one-line body:
+    /// `recordedNotifications` is a mutable actor-isolated stored property,
+    /// and Swift only permits mutating actor-isolated state from inside an
+    /// isolated method — a `[weak self]` notification closure (running
+    /// off-actor) cannot append to it directly, even with `await`, the way
+    /// it can read-then-call-async-method-on an actor-isolated `let` (see
+    /// ``addProgressReportingTool(named:totalSteps:stepDelay:)``'s inlined
+    /// `server.notify(...)` call). This method is the required isolation
+    /// boundary, not an optional abstraction.
+    ///
+    /// - Parameters:
+    ///   - method: The JSON-RPC notification method.
+    ///   - requestId: The cancelled request's id, if the notification
+    ///     carried one.
+    ///   - reason: The human-readable cancellation reason, if the
+    ///     notification carried one.
     private func recordNotification(method: String, requestId: ID?, reason: String?) {
         recordedNotifications.append(
             RecordedNotification(method: method, requestId: requestId, reason: reason))

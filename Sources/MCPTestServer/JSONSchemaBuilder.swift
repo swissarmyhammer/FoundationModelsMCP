@@ -36,4 +36,9 @@ public enum JSONSchemaBuilder {
         }
         return .object(fields)
     }
+
+    /// The empty object schema (`{ "type": "object", "properties": {} }`),
+    /// shared by every tool that takes no arguments so the literal isn't
+    /// repeated at each call site.
+    public static let emptySchema: Value = object(properties: [:])
 }

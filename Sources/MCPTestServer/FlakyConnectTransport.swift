@@ -70,6 +70,9 @@ public actor FlakyConnectTransport: Transport {
     /// Fails with the scripted error while failures remain, otherwise
     /// delegates to the wrapped transport's `connect()` and caches its
     /// receive stream for ``receive()``.
+    ///
+    /// - Throws: The scripted `error` while `remainingFailures` is positive;
+    ///   otherwise whatever the wrapped transport's `connect()` throws.
     public func connect() async throws {
         connectAttempts += 1
         guard remainingFailures <= 0 else {
@@ -86,6 +89,9 @@ public actor FlakyConnectTransport: Transport {
     }
 
     /// Delegates the send operation to the wrapped transport.
+    ///
+    /// - Parameter data: The raw bytes to send.
+    /// - Throws: Whatever the wrapped transport's `send(_:)` throws.
     public func send(_ data: Data) async throws {
         try await wrapped.send(data)
     }

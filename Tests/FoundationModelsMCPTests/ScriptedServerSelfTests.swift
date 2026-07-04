@@ -147,7 +147,7 @@ struct ScriptedServerSelfTests {
         let reschemaed = MCP.Tool(
             name: "beta",
             description: "updated description",
-            inputSchema: JSONSchemaBuilder.object(properties: [:])
+            inputSchema: JSONSchemaBuilder.emptySchema
         )
         await scripted.replaceTool(
             ScriptedTool(definition: reschemaed, handler: { params in
