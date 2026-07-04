@@ -148,6 +148,17 @@ public actor MCPServer {
     /// from the server's self-reported name.
     private let hostSuppliedName: String?
 
+    /// The host-owned coordinator server-initiated `elicitation/create`
+    /// requests are routed to, or `nil` (the default) to never declare the
+    /// elicitation client capability and never register a handler for it at
+    /// all — a server that tries to elicit against a connection configured
+    /// this way gets the SDK's own capability-declaration error, exactly as
+    /// if this actor didn't exist.
+    ///
+    /// - SeeAlso: ``ElicitationCoordinator``, and `docs/swift-sdk-notes.md`'s
+    ///   "Elicitation surface" section.
+    private let elicitationCoordinator: (any ElicitationCoordinator)?
+
     /// The current readiness state.
     ///
     /// - SeeAlso: ``MCPServerState``
@@ -223,6 +234,10 @@ public actor MCPServer {
     ///     precedence over the server's self-reported `Server.Info.name` at
     ///     `initialize`. Pass `nil` (the default) to derive ``identity``
     ///     from the server instead.
+    ///   - elicitationCoordinator: The host-owned coordinator server-initiated
+    ///     `elicitation/create` requests are routed to. Passing `nil` (the
+    ///     default) means this connection never declares the elicitation
+    ///     client capability and never registers a handler for it.
     ///   - clock: The clock ``connect(transport:backoffPolicy:)`` sleeps on
     ///     between retries. Defaults to a real `ContinuousClock`; tests
     ///     substitute a virtual clock to exercise a full backoff schedule
@@ -233,11 +248,13 @@ public actor MCPServer {
     public init(
         client: MCP.Client,
         name: String? = nil,
+        elicitationCoordinator: (any ElicitationCoordinator)? = nil,
         clock: any Clock<Duration> = ContinuousClock(),
         logger: Logger = Logger(label: "com.foundationmodelsmcp.mcpserver")
     ) {
         self.client = client
         self.hostSuppliedName = name
+        self.elicitationCoordinator = elicitationCoordinator
         self.clock = clock
         self.logger = logger
     }
@@ -520,6 +537,9 @@ public actor MCPServer {
         }
         lastTransport = transport
         state = .connecting
+        if let elicitationCoordinator {
+            await declareElicitationCapabilityAndRegisterHandler(coordinator: elicitationCoordinator)
+        }
         do {
             let initializeResult = try await client.connect(transport: transport)
             let tools = try await discoverAllTools()
@@ -620,6 +640,85 @@ public actor MCPServer {
             cursor = page.nextCursor
         } while cursor != nil
         return try allTools.map { try MCPTool(tool: $0, client: client) }
+    }
+
+    // MARK: - Elicitation
+
+    /// Declares the elicitation client capability on ``client`` and
+    /// registers the handler that routes every `elicitation/create` request
+    /// to `coordinator` — the two "wire the actor" duties `plan.md`'s
+    /// "Elicitation: user input, in both directions" section assigns to
+    /// ``MCPServer``.
+    ///
+    /// `client.capabilities` is an actor-isolated stored property with no
+    /// public setter — `MCP.Client` only ever reads it once, at the
+    /// `initialize` handshake inside `connect(transport:)`, and the pinned
+    /// swift-sdk exposes no API to mutate it from outside afterward (see
+    /// `docs/swift-sdk-notes.md`'s "Elicitation surface" section). Per that
+    /// note, `withElicitationHandler(_:)` is documented as *the* declaration
+    /// mechanism this SDK version provides: registering it is the whole of
+    /// what an external caller can do to opt a connection into elicitation.
+    /// A host that also needs the capability reflected verbatim in the
+    /// `initialize` request must construct its `MCP.Client` with
+    /// `capabilities: .init(elicitation: .init(form: .init(), url: .init()))`
+    /// up front, before handing it to ``MCPServer/init(client:name:elicitationCoordinator:clock:logger:)``.
+    ///
+    /// Safe to call again on every reconnect attempt: `withMethodHandler`
+    /// simply re-registers the same handler.
+    ///
+    /// - Parameter coordinator: The coordinator every routed request is sent
+    ///   to.
+    private func declareElicitationCapabilityAndRegisterHandler(
+        coordinator: any ElicitationCoordinator
+    ) async {
+        await client.withElicitationHandler { parameters in
+            await Self.answerElicitation(parameters, coordinator: coordinator)
+        }
+    }
+
+    /// Routes one server-initiated `elicitation/create` request to
+    /// `coordinator`, enforcing the no-secrets-in-form-mode rule (see
+    /// ``Elicitation/RequestSchema/requiresURLModeRouting`` and
+    /// ``ElicitationRouting``), and converts the coordinator's
+    /// ``ElicitationResponse`` back into the `CreateElicitation.Result` the
+    /// server expects.
+    ///
+    /// - Parameters:
+    ///   - parameters: The request exactly as the server sent it — either
+    ///     form-mode (`message` + `requestedSchema`) or URL-mode (`message`
+    ///     + a genuine `url`).
+    ///   - coordinator: The coordinator to route to.
+    /// - Returns: The `CreateElicitation.Result` reporting the user's
+    ///   action.
+    private static func answerElicitation(
+        _ parameters: CreateElicitation.Parameters,
+        coordinator: any ElicitationCoordinator
+    ) async -> CreateElicitation.Result {
+        let response: ElicitationResponse
+        switch parameters {
+        case .form(let form):
+            response = await ElicitationRouting.route(
+                message: form.message, requestedSchema: form.requestedSchema, coordinator: coordinator)
+        case .url(let url):
+            response = await coordinator.elicit(message: url.message, url: url.url)
+        }
+        return Self.makeElicitationResult(from: response)
+    }
+
+    /// Converts an ``ElicitationResponse`` into the `CreateElicitation.Result`
+    /// the server expects.
+    ///
+    /// - Parameter response: The coordinator's response.
+    /// - Returns: The equivalent `CreateElicitation.Result`.
+    private static func makeElicitationResult(from response: ElicitationResponse) -> CreateElicitation.Result {
+        switch response {
+        case .accept(let content):
+            return CreateElicitation.Result(action: .accept, content: content)
+        case .decline:
+            return CreateElicitation.Result(action: .decline)
+        case .cancel:
+            return CreateElicitation.Result(action: .cancel)
+        }
     }
 }
 
