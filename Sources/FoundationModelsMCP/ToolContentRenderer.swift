@@ -14,47 +14,76 @@ import MCP
 /// link is never fetched to learn more about it.
 public enum ToolContentRenderer {
 
+    /// The default render budget, in characters: the maximum length of any
+    /// single rendered text unit — a `.text`/`.resource` content item's text,
+    /// or `structuredContent`'s JSON — before ``trimmed(_:budget:)`` elides
+    /// its middle.
+    ///
+    /// Tool results are the context-window cost, not the model's own output,
+    /// so a single oversized result must not be allowed to dominate a
+    /// transcript. 8,192 characters (roughly 2,000 tokens) is a conservative
+    /// slice of a typical context window, chosen so several tool calls can
+    /// still fit alongside the rest of a session — see Apple's
+    /// [managing-the-context-window](https://developer.apple.com/documentation/foundationmodels/managing-the-context-window)
+    /// guidance, which this renderer's *output*-side budget complements from
+    /// the *input* side.
+    public static let defaultRenderBudget = 8_192
+
     /// Renders a `tools/call` result for the model.
     ///
     /// Output shape: each `content` item is rendered (see the per-case rules
     /// below) and the results are joined with newlines; a `structuredContent`
-    /// section (see ``renderStructuredContent(_:outputSchema:)``) is appended
-    /// after a blank line, if present. If `isError == true`, an `"Error:"`
-    /// paragraph is prepended — the failure is marked, never hidden, and the
-    /// content/structuredContent that accompanies it is still rendered in
-    /// full.
+    /// section (see ``renderStructuredContent(_:outputSchema:budget:)``) is
+    /// appended after a blank line, if present. If `isError == true`, an
+    /// `"Error:"` paragraph is prepended — the failure is marked, never
+    /// hidden, and the content/structuredContent that accompanies it is
+    /// still rendered in full.
     ///
     /// Per-content-case rendering:
-    /// - `.text`: the text, verbatim.
+    /// - `.text`: the text, trimmed to `budget` — see ``trimmed(_:budget:)``.
     /// - `.image` / `.audio`: a `"[image: <mimeType>]"` / `"[audio:
-    ///   <mimeType>]"` placeholder — the base64 payload is never rendered.
-    /// - `.resource`: the embedded `text`, prefixed with its `uri`, when the
-    ///   resource carries text; otherwise a placeholder naming the `uri` and
-    ///   `mimeType` — a binary `blob` is never decoded or rendered.
+    ///   <mimeType>]"` placeholder — the base64 payload is never rendered,
+    ///   regardless of `budget`.
+    /// - `.resource`: the embedded `text`, prefixed with its `uri` and
+    ///   trimmed to `budget`, when the resource carries text; otherwise a
+    ///   placeholder naming the `uri` and `mimeType` — a binary `blob` is
+    ///   never decoded or rendered.
     /// - `.resourceLink`: a `"[resource link: <title-or-name> <uri>]"`
     ///   descriptor built only from the link's own fields (`uri`, `name`,
     ///   `title`, `mimeType`) — the link is never dereferenced, so its
     ///   `description` (which describes the *target*, not the link itself)
     ///   and any other information that would require fetching it are not
-    ///   part of the rendered output.
+    ///   part of the rendered output. Like `.image`/`.audio`'s placeholder,
+    ///   this descriptor is declared metadata, not a text payload, so it is
+    ///   not subject to `budget`.
+    ///
+    /// A `result` whose rendered text units all fall at or under `budget` is
+    /// returned exactly as it would be with trimming absent — untouched,
+    /// character for character.
     ///
     /// - Parameters:
     ///   - result: The `tools/call` result to render.
     ///   - outputSchema: The tool's declared `outputSchema` (`Tool.outputSchema`),
     ///     used to validate `result.structuredContent` against the pinned
-    ///     subset in ``renderStructuredContent(_:outputSchema:)``. `nil` skips
-    ///     validation entirely.
+    ///     subset in ``renderStructuredContent(_:outputSchema:budget:)``.
+    ///     `nil` skips validation entirely.
+    ///   - budget: The maximum character count for any single rendered text
+    ///     unit before it is trimmed; see ``defaultRenderBudget`` for the
+    ///     default and ``trimmed(_:budget:)`` for the trimming rule.
     /// - Returns: The rendered text.
-    public static func render(_ result: CallTool.Result, outputSchema: Value? = nil) -> String {
+    public static func render(
+        _ result: CallTool.Result, outputSchema: Value? = nil, budget: Int = defaultRenderBudget
+    ) -> String {
         var sections: [String] = []
 
-        let body = result.content.map(render(content:)).joined(separator: "\n")
+        let body = result.content.map { render(content: $0, budget: budget) }.joined(separator: "\n")
         if !body.isEmpty {
             sections.append(body)
         }
 
         if let structuredContent = result.structuredContent {
-            sections.append(renderStructuredContent(structuredContent, outputSchema: outputSchema))
+            sections.append(
+                renderStructuredContent(structuredContent, outputSchema: outputSchema, budget: budget))
         }
 
         if result.isError == true {
@@ -68,17 +97,24 @@ public enum ToolContentRenderer {
 
     /// Renders one `Tool.Content` item.
     ///
-    /// See ``render(_:outputSchema:)`` for the documented per-case format.
-    private static func render(content: Tool.Content) -> String {
+    /// See ``render(_:outputSchema:budget:)`` for the documented per-case
+    /// format.
+    ///
+    /// - Parameters:
+    ///   - content: The content item to render.
+    ///   - budget: The maximum character count before text-bearing cases are
+    ///     trimmed; see ``trimmed(_:budget:)``.
+    /// - Returns: The rendered text for `content`.
+    private static func render(content: Tool.Content, budget: Int) -> String {
         switch content {
         case .text(let text, _, _):
-            return text
+            return trimmed(text, budget: budget)
         case .image(_, let mimeType, _, _):
             return "[image: \(mimeType)]"
         case .audio(_, let mimeType, _, _):
             return "[audio: \(mimeType)]"
         case .resource(let resource, _, _):
-            return renderResource(resource)
+            return renderResource(resource, budget: budget)
         case .resourceLink(let uri, let name, let title, _, let mimeType, _):
             return renderResourceLink(uri: uri, name: name, title: title, mimeType: mimeType)
         }
@@ -86,11 +122,18 @@ public enum ToolContentRenderer {
 
     /// Renders an embedded resource (`EmbeddedResource`).
     ///
-    /// Text resources are rendered in full; binary resources (only a
-    /// `blob`) are described, not decoded — see ``render(_:outputSchema:)``.
-    private static func renderResource(_ resource: Resource.Content) -> String {
+    /// Text resources are rendered in full, trimmed to `budget`; binary
+    /// resources (only a `blob`) are described, not decoded — see
+    /// ``render(_:outputSchema:budget:)``.
+    ///
+    /// - Parameters:
+    ///   - resource: The embedded resource to render.
+    ///   - budget: The maximum character count before the resource's `text`
+    ///     is trimmed; see ``trimmed(_:budget:)``.
+    /// - Returns: The rendered text for `resource`.
+    private static func renderResource(_ resource: Resource.Content, budget: Int) -> String {
         if let text = resource.text {
-            return "[resource: \(resource.uri)]\n\(text)"
+            return "[resource: \(resource.uri)]\n\(trimmed(text, budget: budget))"
         }
         let mimeType = resource.mimeType ?? "application/octet-stream"
         return "[resource: \(resource.uri) (\(mimeType))]"
@@ -98,7 +141,7 @@ public enum ToolContentRenderer {
 
     /// Renders a `.resourceLink` from its own declared fields only.
     ///
-    /// Never fetches `uri` — see ``render(_:outputSchema:)``.
+    /// Never fetches `uri` — see ``render(_:outputSchema:budget:)``.
     private static func renderResourceLink(
         uri: String, name: String, title: String?, mimeType: String?
     ) -> String {
@@ -109,18 +152,90 @@ public enum ToolContentRenderer {
         return "[resource link: \(label) <\(uri)>]"
     }
 
+    // MARK: - Bounded output / render budget
+
+    /// Trims `text` to `budget` characters, replacing an elided middle
+    /// section with a marker that names exactly how many characters were
+    /// removed.
+    ///
+    /// `text` at or under `budget` characters is returned unchanged, byte
+    /// for byte — trimming never touches an already-in-budget result. An
+    /// oversized `text` is split into a head and a tail kept from either end
+    /// (as close to evenly as `budget` allows once the marker's own length
+    /// is accounted for) with the elided middle described in between; the
+    /// split point depends only on `text` and `budget`, so the same input
+    /// and budget always produce the identical output.
+    ///
+    /// The elided count can never exceed `totalCount`, and decimal digit
+    /// count is monotonic non-decreasing in value — so a marker sized for
+    /// `totalCount` itself is always at least as long as the marker actually
+    /// rendered below, once the real elided count is known. Reserving space
+    /// for that worst case up front, rather than an approximation of the
+    /// elided count, guarantees `head + marker + tail` never exceeds
+    /// `budget` — the earlier approach (sizing the reservation off
+    /// `totalCount - budget` before the split) could under-reserve when the
+    /// approximate and actual elided counts had different digit widths
+    /// (e.g. 9,999 vs. 10,000), silently overshooting `budget` by exactly
+    /// the extra digit.
+    ///
+    /// - Parameters:
+    ///   - text: The candidate text to trim.
+    ///   - budget: The maximum character count `text` may occupy before it
+    ///     is trimmed. When `budget` is smaller than the marker's own
+    ///     minimum length — which must be long enough to name the full
+    ///     elided count — the result is the marker alone, and it may itself
+    ///     exceed `budget`: a marker cannot state how much was elided in
+    ///     fewer characters than that statement requires.
+    /// - Returns: `text` unchanged if it is at or under `budget` characters;
+    ///   otherwise a `head + marker + tail` excerpt whose marker states
+    ///   exactly how many characters of `text` are not shown.
+    private static func trimmed(_ text: String, budget: Int) -> String {
+        let totalCount = text.count
+        guard totalCount > budget else { return text }
+
+        let worstCaseMarker = elisionMarker(elidedCount: totalCount)
+        let keptCount = max(budget - worstCaseMarker.count, 0)
+        let headCount = keptCount / 2
+        let tailCount = keptCount - headCount
+
+        let head = text.prefix(headCount)
+        let tail = text.suffix(tailCount)
+        let marker = elisionMarker(elidedCount: totalCount - headCount - tailCount)
+        return head + marker + tail
+    }
+
+    /// The elision marker naming `elidedCount`, used by ``trimmed(_:budget:)``.
+    ///
+    /// - Parameter elidedCount: The number of characters the marker reports
+    ///   as removed.
+    /// - Returns: A standalone `"[elided <elidedCount> characters]"` line.
+    private static func elisionMarker(elidedCount: Int) -> String {
+        "\n[elided \(elidedCount) characters]\n"
+    }
+
     // MARK: - structuredContent + outputSchema validation
 
-    /// Renders `structuredContent` as sorted-key JSON under a `"Structured
-    /// result:"` header, then — when `outputSchema` is supplied —
-    /// validates it against the **pinned shallow-validation subset**
-    /// documented on ``validate(_:against:)`` and appends any failures as a
-    /// `"Note:"` list.
+    /// Renders `structuredContent` as sorted-key JSON, trimmed to `budget`,
+    /// under a `"Structured result:"` header, then — when `outputSchema` is
+    /// supplied — validates the **untrimmed** value against the **pinned
+    /// shallow-validation subset** documented on ``validate(_:against:)``
+    /// and appends any failures as a `"Note:"` list.
     ///
-    /// A validation failure never hides `structuredContent`; it is always
-    /// appended alongside the content it describes.
-    private static func renderStructuredContent(_ value: Value, outputSchema: Value?) -> String {
-        var lines = ["Structured result:", jsonString(for: value)]
+    /// Validation runs against the original `value`, not the trimmed JSON
+    /// text, so trimming a large payload never changes which validation
+    /// issues are reported. A validation failure never hides
+    /// `structuredContent`; it is always appended alongside the content it
+    /// describes.
+    ///
+    /// - Parameters:
+    ///   - value: The `structuredContent` value to render.
+    ///   - outputSchema: The tool's declared `outputSchema`, or `nil` to skip
+    ///     validation.
+    ///   - budget: The maximum character count before the rendered JSON is
+    ///     trimmed; see ``trimmed(_:budget:)``.
+    /// - Returns: The rendered `"Structured result:"` section.
+    private static func renderStructuredContent(_ value: Value, outputSchema: Value?, budget: Int) -> String {
+        var lines = ["Structured result:", trimmed(jsonString(for: value), budget: budget)]
 
         if let outputSchema {
             let issues = validate(value, against: outputSchema)
