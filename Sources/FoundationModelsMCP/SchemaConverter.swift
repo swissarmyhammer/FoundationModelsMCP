@@ -336,17 +336,31 @@ public enum SchemaConverter {
         case "array":
             return parseArray(fields, name: name, path: path, onDrop: onDrop)
         default:
-            if let primitive = typeString.flatMap({ primitiveTypeMap[$0] }) {
-                return applyScalarGuide(to: primitive, fields: fields, path: path, onDrop: onDrop)
-            }
-            // No recognized `type`, but shaped like an object (e.g. a root
-            // `inputSchema` that omits `"type": "object"`, which the MCP
-            // spec still treats as an object schema).
-            if fields["properties"] != nil {
-                return parseObject(fields, name: name, path: path, onDrop: onDrop)
-            }
-            return .unknown
+            return parseUntypedNode(
+                fields, name: name, path: path, onDrop: onDrop, typeString: typeString)
         }
+    }
+
+    /// Parses a node whose `type` is anything other than `object`/`array` — a recognized primitive `type` string, or an absent/unrecognized `type` that may still be shaped like an object.
+    ///
+    /// - Parameters:
+    ///   - fields: The node's raw JSON Schema fields.
+    ///   - name: The name to assign the parsed node.
+    ///   - path: A slash-delimited JSON path to this node, for ``SchemaConversionLogRecord``.
+    ///   - onDrop: Invoked once for every JSON Schema construct dropped while parsing this node or its descendants.
+    ///   - typeString: The node's raw JSON Schema `type` value, already confirmed not to name a recognized `object`/`array` shape.
+    /// - Returns: The applicable scalar guide's `SchemaIR` if `typeString` names a recognized primitive; the parsed object if the node has a `properties` field despite lacking a recognized `type` (e.g. a root `inputSchema` that omits `"type": "object"`, which the MCP spec still treats as an object schema); or `.unknown` otherwise.
+    private static func parseUntypedNode(
+        _ fields: [String: Value], name: String, path: String, onDrop: SchemaConversionLogHandler,
+        typeString: String?
+    ) -> SchemaIR {
+        if let primitive = typeString.flatMap({ primitiveTypeMap[$0] }) {
+            return applyScalarGuide(to: primitive, fields: fields, path: path, onDrop: onDrop)
+        }
+        if fields["properties"] != nil {
+            return parseObject(fields, name: name, path: path, onDrop: onDrop)
+        }
+        return .unknown
     }
 
     /// The JSON Schema primitive `type` strings, keyed to their `SchemaIR` case.
@@ -497,16 +511,10 @@ public enum SchemaConverter {
         var properties: [SchemaIR.Property] = []
         if case .object(let propertyFields)? = fields["properties"] {
             for (propertyName, propertySchema) in propertyFields.sorted(by: { $0.key < $1.key }) {
-                let description: String?
-                if case .object(let propertySchemaFields) = propertySchema {
-                    description = propertySchemaFields[descriptionKey]?.stringValue
-                } else {
-                    description = nil
-                }
                 properties.append(
                     SchemaIR.Property(
                         name: propertyName,
-                        description: description,
+                        description: parsePropertyDescription(propertySchema),
                         schema: parseNode(
                             propertySchema, name: "\(name)_\(propertyName)", path: "\(path)/\(propertyName)",
                             onDrop: onDrop),
@@ -521,6 +529,15 @@ public enum SchemaConverter {
             description: fields[descriptionKey]?.stringValue,
             properties: properties
         )
+    }
+
+    /// Reads a property's JSON Schema `description`, given its raw (as-yet-unparsed) value from the enclosing object's `properties` map.
+    ///
+    /// - Parameter propertySchema: The property's raw JSON Schema value.
+    /// - Returns: The property's `description` string, or `nil` if `propertySchema` is not an object node (every valid JSON Schema property schema is) or has no `description`.
+    private static func parsePropertyDescription(_ propertySchema: Value) -> String? {
+        guard case .object(let propertySchemaFields) = propertySchema else { return nil }
+        return propertySchemaFields[descriptionKey]?.stringValue
     }
 
     /// Parses an array node's `items` and `minItems`/`maxItems` into an ``SchemaIR/array(items:)`` case, optionally wrapped in ``SchemaIR/guided(base:guide:)``.
@@ -681,14 +698,24 @@ public enum SchemaConverter {
             (.number, .numericRange(let minimum, let maximum)):
             return DynamicGenerationSchema(type: Decimal.self, guides: [decimalRangeGuide(minimum: minimum, maximum: maximum)])
         case (.string, .pattern(let source)):
-            guard let regex = try? Regex(source) else { return dynamicSchema(for: base) }
-            return DynamicGenerationSchema(type: String.self, guides: [.pattern(regex)])
+            return dynamicSchema(forStringPattern: source, fallbackBase: base)
         case (.array(let items), .count(let minimum, let maximum)):
             return DynamicGenerationSchema(
                 arrayOf: dynamicSchema(for: items), minimumElements: minimum, maximumElements: maximum)
         default:
             return dynamicSchema(for: base)
         }
+    }
+
+    /// Builds the `DynamicGenerationSchema` for a `.string` base guided by ``SchemaIR/GuideSpec/pattern(_:)``, compiling `source` as a Swift `Regex`.
+    ///
+    /// - Parameters:
+    ///   - source: The pattern's raw ECMA-262 regex source. `SchemaConverter` only ever constructs a `.pattern` guide for a source already confirmed to compile as a `Regex` during parsing (see ``applyPatternGuide(fields:path:onDrop:)``), so this recompile is expected to succeed; the fallback below exists only as a defensive guard, never actually exercised on a `SchemaIR` `SchemaConverter` itself produced.
+    ///   - fallbackBase: The `.string` base to fall back to (unguided) if `source` fails to compile here.
+    /// - Returns: `DynamicGenerationSchema(type: String.self, guides: [.pattern(regex)])` if `source` compiles as a `Regex`, or the unguided ``dynamicSchema(for:)`` translation of `fallbackBase` otherwise.
+    private static func dynamicSchema(forStringPattern source: String, fallbackBase: SchemaIR) -> DynamicGenerationSchema {
+        guard let regex = try? Regex(source) else { return dynamicSchema(for: fallbackBase) }
+        return DynamicGenerationSchema(type: String.self, guides: [.pattern(regex)])
     }
 
     /// Builds the `GenerationGuide<Decimal>` for a ``SchemaIR/GuideSpec/numericRange(minimum:maximum:)``.
