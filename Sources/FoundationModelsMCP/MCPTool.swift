@@ -36,8 +36,20 @@ public struct MCPTool: FoundationModels.Tool {
     /// the full rationale.
     private let client: any MCPToolCalling
 
-    /// The tool's name, sourced verbatim from the source `MCP.Tool`.
-    public var name: String { tool.name }
+    /// A disambiguated name assigned by ``resolveSessionTools(from:)`` to
+    /// resolve a cross-provider tool-name collision, taking precedence over
+    /// the source `MCP.Tool`'s own name when present.
+    ///
+    /// `nil` for every tool built through ``init(tool:client:)`` directly;
+    /// only ``renamed(to:)`` ever sets it, so a tool's name only ever
+    /// diverges from `tool.name` as an explicit, traceable disambiguation
+    /// step.
+    private var nameOverride: String?
+
+    /// The tool's name: ``nameOverride`` if a cross-provider collision was
+    /// disambiguated (see ``renamed(to:)``), otherwise sourced verbatim from
+    /// the source `MCP.Tool`.
+    public var name: String { nameOverride ?? tool.name }
 
     /// The tool's description, sourced verbatim from the source `MCP.Tool`,
     /// or an empty string if the server declared none.
@@ -87,8 +99,27 @@ public struct MCPTool: FoundationModels.Tool {
     public init(tool: MCP.Tool, client: any MCPToolCalling) throws {
         self.tool = tool
         self.client = client
+        self.nameOverride = nil
         let conversion = SchemaConverter.parse(tool.inputSchema, name: tool.name)
         self.parameters = try SchemaConverter.emit(conversion)
+    }
+
+    /// Returns a copy of this tool with ``name`` overridden to `newName`,
+    /// leaving every other property — description, parameters, and calling
+    /// behavior (`call(arguments:)` still forwards to the source `MCP.Tool`'s
+    /// own `tool.name` against ``client``) — unchanged.
+    ///
+    /// Used exclusively by ``resolveSessionTools(from:)`` to disambiguate a
+    /// cross-provider tool-name collision; the model-facing ``name`` changes,
+    /// but the tool it calls on the server does not.
+    ///
+    /// - Parameter newName: The disambiguated name to present in place of the
+    ///   source `MCP.Tool`'s own name.
+    /// - Returns: A copy of this tool whose ``name`` is `newName`.
+    func renamed(to newName: String) -> MCPTool {
+        var copy = self
+        copy.nameOverride = newName
+        return copy
     }
 
     /// Calls the underlying MCP tool and renders its result for the model.
