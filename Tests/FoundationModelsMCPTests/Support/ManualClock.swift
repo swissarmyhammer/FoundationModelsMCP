@@ -7,6 +7,7 @@ struct ManualInstant: InstantProtocol {
     /// The elapsed time since ``ManualClock``'s zero point.
     var offset: Duration
 
+    /// Orders instants by their offset from the clock's zero point.
     static func < (lhs: ManualInstant, rhs: ManualInstant) -> Bool {
         lhs.offset < rhs.offset
     }
@@ -60,10 +61,14 @@ final class ManualClock: Clock, Sendable {
         state.withLock { $0.sleeps }
     }
 
+    /// The clock's current virtual instant, advanced only by calls to
+    /// ``sleep(until:tolerance:)``.
     var now: ManualInstant {
         state.withLock { $0.currentInstant }
     }
 
+    /// No meaningful minimum resolution: a manual clock has no real
+    /// scheduling granularity.
     var minimumResolution: Swift.Duration { .zero }
 
     /// Records the requested delay (`currentInstant` to `deadline`) and

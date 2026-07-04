@@ -41,6 +41,8 @@ actor RespawningTransport: Transport {
     /// `current`'s wire protocol.
     private var currentServer: ScriptedServer?
 
+    /// The logger to report transport-related events to, supplied via
+    /// ``init(logger:makePair:)`` (or a no-op default).
     nonisolated let logger: Logger
 
     /// Creates a respawning transport.

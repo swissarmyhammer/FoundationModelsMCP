@@ -30,28 +30,30 @@ comments:
 
     Final state: swift build clean (0 warnings), swift test 126/126 green (was 124 before this task; +ResilienceTests with 6 tests). Ready for review.
   timestamp: 2026-07-04T20:00:46.120861+00:00
+- actor: claude-code
+  id: 01kwqca144yqbpyyv7vakq6qwq
+  text: |-
+    Addressed review findings: added doc comments to HangingTransport.disconnect() ("This stub transport has nothing to disconnect.") and HangingTransport.receive() ("Returns an empty receive stream; this hanging transport never connects and produces no data.") exactly as specified.
+
+    Swept the other three new test doubles for the same class of gap:
+    - ManualClock.swift: RespawningTransport.swift and GatedConnectTransport.swift were already fully documented (every non-private method/property has a doc comment). ManualClock.swift had three gaps beyond the two flagged files — ManualInstant's `static func <` (Comparable/InstantProtocol requirement), and ManualClock's `now` and `minimumResolution` (Clock protocol requirements) — all lacked doc comments while their sibling members (`advanced(by:)`, `duration(to:)`, `recordedSleeps`) did. Added doc comments to all three for consistency.
+    - RespawningTransport.swift and GatedConnectTransport.swift: no additional gaps found; every method already has a doc comment.
+
+    swift build: clean, exit 0. swift test: 126/126 passed, 0 failures. Checked off both review finding checkboxes. Leaving task in doing per /implement process — ready for /review.
+  timestamp: 2026-07-04T20:14:51.524732+00:00
+- actor: claude-code
+  id: 01kwqcgmf39yzy09gnmrysfe2p
+  text: |-
+    Adversarial double-check (round 1) returned REVISE: my initial sweep missed the `logger` stored property in all three files (HangingTransport.swift, RespawningTransport.swift, GatedConnectTransport.swift) — none had a doc comment despite being non-private declarations, and I had incorrectly claimed RespawningTransport/GatedConnectTransport were "already fully documented."
+
+    Fixed: added a doc comment to each file's `logger` property (HangingTransport: "A no-op logger; this double never connects, so nothing is ever logged through it."; RespawningTransport and GatedConnectTransport: describes it as supplied via their respective initializers, or a no-op default).
+
+    Verified fresh: swift build clean (exit 0), swift test 126/126 passed, 0 failures. Diff remains doc-comments-only, no logic changes. Not re-spawning a second double-check round per really-done's bounded-loop guidance — the fix is a mechanical, verified doc-comment addition following the identical pattern the double-check already validated for HangingTransport's other two methods and ManualClock's three properties. All four Support/ files now have a doc comment on every non-private declaration.
+  timestamp: 2026-07-04T20:18:27.939461+00:00
 depends_on:
 - 01KWMS0RQH4YWDJGDAVR1M7FAY
 position_column: doing
 position_ordinal: '80'
 title: 'MCPServer resilience: backoff connect, auto-reconnect, fault → isError'
 ---
-## What
-Add connection resilience to `MCPServer` per plan.md Lifecycle policy: connect retries with **exponential backoff** (per-attempt connect timeout, backoff base/cap, max attempts — all host-overridable via a `BackoffPolicy` config with documented defaults); hard-fail only when backoff is exhausted. **Auto-reconnect** on transport error with the same policy (use the SDK's transport reconnect where available, wrap where not). A mid-call transport fault maps to an `isError`-style rendered result so the model can react. Structured logging (swift-log/OSLog) on every retry/reconnect/fault.
-
-- [ ] BackoffPolicy config (timeout, base, cap, max attempts) + defaults
-- [ ] Connect retry loop, hard-fail on exhaustion
-- [ ] Auto-reconnect on transport error
-- [ ] Mid-call fault → rendered error result; structured log events
-
-## Acceptance Criteria
-- [ ] With a fail-twice-then-succeed scripted transport, connect succeeds on attempt 3 with expected backoff schedule (virtual clock — no real sleeps in tests)
-- [ ] Exhausted backoff throws a typed error naming the server identity
-- [ ] A call during a scripted drop returns an error result (not a hang or crash) and the server re-enters ready after reconnect
-
-## Tests
-- [ ] `Tests/FoundationModelsMCPTests/ResilienceTests.swift`: retry counts + schedule via injected clock, exhaustion error, fault→isError mapping, reconnect to ready
-- [ ] `swift test --filter Resilience` green
-
-## Workflow
-- Use `/tdd` — write failing tests first, then implement to make them pass.
+## What\nAdd connection resilience to `MCPServer` per plan.md Lifecycle policy: connect retries with **exponential backoff** (per-attempt connect timeout, backoff base/cap, max attempts — all host-overridable via a `BackoffPolicy` config with documented defaults); hard-fail only when backoff is exhausted. **Auto-reconnect** on transport error with the same policy (use the SDK's transport reconnect where available, wrap where not). A mid-call transport fault maps to an `isError`-style rendered result so the model can react. Structured logging (swift-log/OSLog) on every retry/reconnect/fault.\n\n- [ ] BackoffPolicy config (timeout, base, cap, max attempts) + defaults\n- [ ] Connect retry loop, hard-fail on exhaustion\n- [ ] Auto-reconnect on transport error\n- [ ] Mid-call fault → rendered error result; structured log events\n\n## Acceptance Criteria\n- [ ] With a fail-twice-then-succeed scripted transport, connect succeeds on attempt 3 with expected backoff schedule (virtual clock — no real sleeps in tests)\n- [ ] Exhausted backoff throws a typed error naming the server identity\n- [ ] A call during a scripted drop returns an error result (not a hang or crash) and the server re-enters ready after reconnect\n\n## Tests\n- [ ] `Tests/FoundationModelsMCPTests/ResilienceTests.swift`: retry counts + schedule via injected clock, exhaustion error, fault→isError mapping, reconnect to ready\n- [ ] `swift test --filter Resilience` green\n\n## Workflow\n- Use `/tdd` — write failing tests first, then implement to make them pass.\n\n## Review Findings (2026-07-04 15:08)\n\n- [x] `Tests/FoundationModelsMCPTests/Support/HangingTransport.swift:36` — Public method `disconnect()` lacks documentation. Although it's a protocol conformance with an empty body, its purpose (doing nothing) should be documented for clarity. Add a doc comment explaining that this stub transport has nothing to disconnect: `/// This stub transport has nothing to disconnect.`.\n- [x] `Tests/FoundationModelsMCPTests/Support/HangingTransport.swift:43` — Public method `receive()` lacks documentation. Although it returns an empty stream, the purpose should be documented. Add a doc comment explaining the stub behavior: `/// Returns an empty receive stream; this hanging transport never connects and produces no data.`.\n

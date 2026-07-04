@@ -25,6 +25,8 @@ actor GatedConnectTransport: Transport {
     private var released = false
     private var wrappedReceiveStream: AsyncThrowingStream<Data, Swift.Error>?
 
+    /// The logger to report transport-related events to, supplied via
+    /// ``init(wrapping:logger:)`` (or a no-op default).
     nonisolated let logger: Logger
 
     /// Creates a gated wrapper around `wrapped`, with the gate initially

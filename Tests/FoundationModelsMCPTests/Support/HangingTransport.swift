@@ -25,6 +25,8 @@ import MCP
 /// loser task, rather than merely relying on the loser's own
 /// cancellation-cooperativeness.
 actor HangingTransport: Transport {
+    /// A no-op logger; this double never connects, so nothing is ever
+    /// logged through it.
     nonisolated let logger = Logger(
         label: "mcp.transport.hanging",
         factory: { _ in SwiftLogNoOpLogHandler() }
@@ -38,6 +40,7 @@ actor HangingTransport: Transport {
         }
     }
 
+    /// This stub transport has nothing to disconnect.
     func disconnect() async {}
 
     /// Always throws: this double never reaches a connected state.
@@ -45,6 +48,8 @@ actor HangingTransport: Transport {
         throw MCPError.internalError("HangingTransport never connects")
     }
 
+    /// Returns an empty receive stream; this hanging transport never
+    /// connects and produces no data.
     func receive() -> AsyncThrowingStream<Data, Swift.Error> {
         AsyncThrowingStream { _ in }
     }
