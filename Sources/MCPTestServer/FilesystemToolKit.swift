@@ -54,7 +54,7 @@ extension ScriptedServer {
     @discardableResult
     public func addFilesystemTools(initialFiles: [String: String] = [:]) -> VirtualFilesystem {
         let filesystem = VirtualFilesystem(initialFiles: initialFiles)
-        addListFilesTool(filesystem: filesystem)
+        addListFileTool(filesystem: filesystem)
         addReadFileTool(filesystem: filesystem)
         addWriteFileTool(filesystem: filesystem)
         return filesystem
@@ -64,7 +64,7 @@ extension ScriptedServer {
     /// `filesystem`.
     ///
     /// - Parameter filesystem: The backing virtual filesystem.
-    private func addListFilesTool(filesystem: VirtualFilesystem) {
+    private func addListFileTool(filesystem: VirtualFilesystem) {
         addScriptedTool(
             name: "list_files",
             description: "Lists every path in the virtual filesystem.",

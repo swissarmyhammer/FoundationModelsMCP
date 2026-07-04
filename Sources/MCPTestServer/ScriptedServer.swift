@@ -199,7 +199,7 @@ public actor ScriptedServer {
     ///   - description: The tool's human-readable description.
     ///   - inputSchema: The tool's input JSON Schema.
     ///   - handler: The closure that answers `tools/call` for this tool.
-    func addScriptedTool(
+    internal func addScriptedTool(
         name: String,
         description: String,
         inputSchema: Value,
@@ -299,19 +299,36 @@ public actor ScriptedServer {
         ) { [weak self] params in
             try await Self.withResolvedSelf(self) { instance in
                 if let token = params._meta?.progressToken {
-                    for step in 1...totalSteps {
-                        try await instance.server.notify(
-                            ProgressNotification.message(
-                                .init(
-                                    progressToken: token, progress: Double(step),
-                                    total: Double(totalSteps))))
-                        try await Task.sleep(for: stepDelay)
-                    }
+                    try await instance.sendProgressNotifications(
+                        token: token, totalSteps: totalSteps, stepDelay: stepDelay)
                 } else {
                     try await Task.sleep(for: stepDelay * totalSteps)
                 }
                 return CallTool.Result(content: [.text(text: "done", annotations: nil, _meta: nil)])
             }
+        }
+    }
+
+    /// Sends `totalSteps` `notifications/progress` notifications, `stepDelay`
+    /// apart — the per-call-opted-in half of
+    /// ``addProgressReportingTool(named:totalSteps:stepDelay:)``.
+    ///
+    /// - Parameters:
+    ///   - token: The progress token supplied by the caller in the call's
+    ///     `_meta`.
+    ///   - totalSteps: How many progress notifications to send.
+    ///   - stepDelay: How long to wait between each notification.
+    /// - Throws: Whatever `MCP.Server.notify(_:)` throws.
+    private func sendProgressNotifications(
+        token: ProgressToken, totalSteps: Int, stepDelay: Duration
+    ) async throws {
+        for step in 1...totalSteps {
+            try await server.notify(
+                ProgressNotification.message(
+                    .init(
+                        progressToken: token, progress: Double(step),
+                        total: Double(totalSteps))))
+            try await Task.sleep(for: stepDelay)
         }
     }
 
