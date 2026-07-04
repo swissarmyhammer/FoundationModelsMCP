@@ -174,6 +174,43 @@ struct ProviderTests {
         #expect(firstRun == secondRun)
     }
 
+    @Test("a renamed tool obtained via collision resolution remains fully functional when called")
+    func renamedToolRemainsFunctionalWhenCalled() async throws {
+        // Built inline (rather than via ``makeReadyServer(named:toolNames:)``)
+        // so `scriptedA`/`scriptedB` stay in scope for the entire test:
+        // ScriptedServer's handlers capture `[weak self]`, so once the actual
+        // `call(arguments:)` below reaches the transport, the scripted server
+        // backing it must still be alive to answer, not just at connect time.
+        let (clientTransportA, serverTransportA) = await InMemoryTransport.createConnectedPair()
+        let scriptedA = ScriptedServer(name: "weather")
+        await scriptedA.addTool(ScriptedServer.echoTool(named: "search"))
+        try await scriptedA.start(transport: serverTransportA)
+        let serverA = MCPServer(client: makeClient(named: "weatherClient"))
+        try await serverA.connect(transport: clientTransportA)
+
+        let (clientTransportB, serverTransportB) = await InMemoryTransport.createConnectedPair()
+        let scriptedB = ScriptedServer(name: "docs")
+        await scriptedB.addTool(ScriptedServer.echoTool(named: "search"))
+        try await scriptedB.start(transport: serverTransportB)
+        let serverB = MCPServer(client: makeClient(named: "docsClient"))
+        try await serverB.connect(transport: clientTransportB)
+
+        let tools = try await resolveSessionTools(from: [serverA, serverB])
+
+        guard let renamedTool = tools.first(where: { $0.name == "weather_search" }) as? MCPTool else {
+            Issue.record("Expected a renamed \"weather_search\" MCPTool among the resolved tools")
+            return
+        }
+
+        // renamed(to:) only changes `name`; `call(arguments:)` must still
+        // forward to the same underlying MCP tool ("search" on serverA's
+        // echo server) and render its result exactly as it would have before
+        // disambiguation.
+        let output = try await renamedTool.call(arguments: GeneratedContent(properties: ["text": "still works"]))
+
+        #expect(output == "still works")
+    }
+
     @Test("resolveSessionTools(from:) leaves non-colliding tool names unchanged")
     func leavesNonCollidingNamesUnchanged() async throws {
         let serverA = try await makeReadyServer(named: "weather", toolNames: ["forecast"])
