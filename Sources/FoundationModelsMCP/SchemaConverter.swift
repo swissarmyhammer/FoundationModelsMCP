@@ -1,3 +1,4 @@
+import Foundation
 import FoundationModels
 import MCP
 
@@ -6,15 +7,16 @@ import MCP
 /// `DynamicGenerationSchema` / `GenerationSchema` are opaque — FoundationModels
 /// exposes no public introspection on a constructed schema — so `SchemaIR` is
 /// the assertion surface for tests: property names, primitive types,
-/// optionality, nesting, and resolved `$ref`s are all plain, inspectable data.
+/// optionality, nesting, resolved `$ref`s, and runtime constraint guides are
+/// all plain, inspectable data.
 ///
-/// Only *structure* is represented here (the rows of plan.md's JSON-Schema →
-/// `DynamicGenerationSchema` table): object/properties/required, primitives,
-/// arrays, enums, nested objects, and `$ref`/`$defs`. Guides — `minimum`/
-/// `maximum`, `pattern`, `minItems`/`maxItems` as runtime `GenerationGuide`s —
-/// and structured fallback logging are a follow-on task; any JSON Schema
-/// keyword or shape this converter does not recognize degrades to
-/// ``unknown(_:)`` rather than throwing.
+/// Structure (the rows of plan.md's JSON-Schema → `DynamicGenerationSchema`
+/// table: object/properties/required, primitives, arrays, enums, nested
+/// objects, and `$ref`/`$defs`) and constraint guides (``guided(base:guide:)``,
+/// covering `minimum`/`maximum`, `pattern`, and `minItems`/`maxItems`) are both
+/// represented here. Any JSON Schema keyword or shape this converter does not
+/// map to a `DynamicGenerationSchema` structure degrades to ``unknown``,
+/// logging what was dropped rather than silently misrepresenting the schema.
 public indirect enum SchemaIR: Sendable, Equatable {
     /// `type: "object"` with `properties`/`required`.
     case object(name: String, description: String?, properties: [Property])
@@ -29,13 +31,25 @@ public indirect enum SchemaIR: Sendable, Equatable {
     /// `type: "array"` with `items`.
     case array(items: SchemaIR)
     /// `enum: [...]` — the discrete set of values the model may choose from.
+    ///
+    /// This is JSON Schema's `enum`-to-`anyOf` guide mapping already fully
+    /// realized: unlike ``guided(base:guide:)``, which layers a constraint on
+    /// top of a structural base, an enum gets its own named choice schema at
+    /// emission (`DynamicGenerationSchema(name:description:anyOf:)`), so no
+    /// separate guide wrapper is needed.
     case enumeration(name: String, description: String?, values: [String])
     /// `$ref` to a `$defs` entry, resolved by name against `SchemaConversion.definitions`.
     case reference(name: String)
     /// A JSON Schema keyword or shape this converter does not map to a `DynamicGenerationSchema` structure (e.g. `anyOf`/`oneOf` unions, `patternProperties`, a schema with no recognized `type`).
     ///
-    /// Degrades to a permissive string schema at emission time.
+    /// Degrades to a permissive string schema at emission time. Every time a
+    /// node degrades to `.unknown` because of a specific unsupported keyword
+    /// (as opposed to simply lacking a recognized `type`), `SchemaConverter`
+    /// reports exactly one ``SchemaConversionLogRecord`` naming that keyword
+    /// and the node's JSON path via the caller-supplied ``SchemaConversionLogHandler``.
     case unknown
+    /// A structural schema (``string``, ``integer``, ``number``, or ``array(items:)``) further restricted by a runtime constraint, emitted as an Apple `GenerationGuide` — or, for array element counts, `DynamicGenerationSchema`'s dedicated count parameters.
+    case guided(base: SchemaIR, guide: GuideSpec)
 
     /// One property of an ``object(name:description:properties:)`` node.
     public struct Property: Sendable, Equatable {
@@ -64,7 +78,79 @@ public indirect enum SchemaIR: Sendable, Equatable {
             self.isOptional = isOptional
         }
     }
+
+    /// A runtime constraint mapped from a JSON Schema keyword, carried by a ``guided(base:guide:)`` node.
+    ///
+    /// Each case is emitted as a real Apple `GenerationGuide` (or, for
+    /// ``count(minimum:maximum:)``, `DynamicGenerationSchema`'s dedicated
+    /// element-count parameters), so the constraint tightens constrained
+    /// decoding instead of merely hinting at it via `description`.
+    public enum GuideSpec: Sendable, Equatable {
+        /// `minimum`/`maximum` (and, folded in, `exclusiveMinimum`/`exclusiveMaximum`) on an `integer` or `number` schema.
+        ///
+        /// Apple's `GenerationGuide` numeric factories are typed to `Decimal`,
+        /// so both JSON Schema `integer` and `number` bounds are represented
+        /// as `Decimal` here (and emitted via `DynamicGenerationSchema(type:
+        /// Decimal.self, guides:)` regardless of the base's own primitive
+        /// type). A `nil` bound means that side is unconstrained.
+        ///
+        /// JSON Schema 2020-12's `exclusiveMinimum`/`exclusiveMaximum` are
+        /// strict (`>`/`<`) bounds, but `GenerationGuide`'s numeric factories
+        /// only express inclusive (`>=`/`<=`) bounds. `SchemaConverter` folds
+        /// an exclusive bound into an inclusive one by nudging it inward:
+        /// by exactly `1` for an `integer` base (the next representable
+        /// integer), or by a small fixed `Decimal` epsilon (`1e-9`) for a
+        /// `number` base, since `Decimal` has no portable "next representable
+        /// value" operation. When both the inclusive and exclusive form of
+        /// the same bound are present, the stricter (nudged) one wins.
+        case numericRange(minimum: Decimal?, maximum: Decimal?)
+        /// `pattern` on a `string` schema — the raw ECMA-262 regex source text.
+        ///
+        /// `SchemaConverter` only ever constructs this case for a source that
+        /// has already been confirmed to compile as a Swift `Regex` during
+        /// parsing; a pattern that fails to compile is dropped (logged, and
+        /// the property falls back to a plain, unconstrained `string`)
+        /// instead of throwing.
+        case pattern(String)
+        /// `minItems`/`maxItems` on an `array` schema.
+        ///
+        /// Emitted via `DynamicGenerationSchema(arrayOf:minimumElements:maximumElements:)`
+        /// rather than a `GenerationGuide<[Element]>`, since that initializer
+        /// is `DynamicGenerationSchema`'s own dedicated element-count API. A
+        /// `nil` bound means that side is unconstrained.
+        case count(minimum: Int?, maximum: Int?)
+    }
 }
+
+/// A single JSON Schema keyword `SchemaConverter` could not map onto a `DynamicGenerationSchema` structure or guide, dropped during parsing.
+///
+/// `SchemaConverter.parse(_:name:onDrop:)` reports exactly one record per
+/// dropped construct via the caller-supplied ``SchemaConversionLogHandler``,
+/// so callers (and tests) can see precisely what was silently permissivized
+/// rather than accurately represented.
+public struct SchemaConversionLogRecord: Sendable, Equatable {
+    /// The JSON Schema keyword that triggered the drop (e.g. `"anyOf"`, `"patternProperties"`, `"$ref"`, `"pattern"`).
+    public var keyword: String
+    /// A slash-delimited JSON path to the node the keyword was found on, rooted at `""` for the top-level `inputSchema`.
+    public var path: String
+
+    /// Creates a log record for a single dropped JSON Schema construct.
+    ///
+    /// - Parameters:
+    ///   - keyword: The JSON Schema keyword that triggered the drop.
+    ///   - path: A slash-delimited JSON path to the node the keyword was found on.
+    public init(keyword: String, path: String) {
+        self.keyword = keyword
+        self.path = path
+    }
+}
+
+/// A caller-injected sink for ``SchemaConversionLogRecord``s reported during `SchemaConverter.parse(_:name:onDrop:)`.
+///
+/// Defaults to a no-op in `parse(_:name:onDrop:)`, so callers that don't care
+/// about dropped constructs don't need to supply one; tests inject a
+/// recording handler to assert on exactly what was dropped.
+public typealias SchemaConversionLogHandler = @Sendable (SchemaConversionLogRecord) -> Void
 
 /// The result of parsing an MCP `inputSchema`: the root ``SchemaIR`` plus any named `$defs` schemas reachable from it via `$ref`.
 public struct SchemaConversion: Sendable, Equatable {
@@ -108,13 +194,19 @@ public enum SchemaConverter {
     ///     by the MCP swift-sdk (targets the 2020-12 dialect).
     ///   - name: The name given to the root schema — typically the MCP tool
     ///     name — used as the emitted `DynamicGenerationSchema`'s type name.
+    ///   - onDrop: Invoked once for every JSON Schema construct dropped during
+    ///     parsing (see ``SchemaIR/unknown`` and the unsupported-keyword
+    ///     table), naming the keyword and JSON path. Defaults to a no-op for
+    ///     callers that don't need to observe dropped constructs.
     /// - Returns: The parsed root schema plus any resolved `$defs`.
-    public static func parse(_ inputSchema: Value, name: String) -> SchemaConversion {
+    public static func parse(
+        _ inputSchema: Value, name: String, onDrop: SchemaConversionLogHandler = { _ in }
+    ) -> SchemaConversion {
         guard case .object(let fields) = inputSchema else {
             return SchemaConversion(name: name, root: .unknown, definitions: [:])
         }
-        let definitions = parseDefinitions(fields)
-        let root = parseNode(inputSchema, name: name)
+        let definitions = parseDefinitions(fields, onDrop: onDrop)
+        let root = parseNode(inputSchema, name: name, path: "", onDrop: onDrop)
         return SchemaConversion(name: name, root: root, definitions: definitions)
     }
 
@@ -150,17 +242,49 @@ public enum SchemaConverter {
 
     /// Parses the `$defs`/`definitions` container (if present) into named `SchemaIR` entries.
     ///
-    /// - Parameter fields: The raw JSON Schema object's fields, as decoded from the `inputSchema` `Value`.
+    /// - Parameters:
+    ///   - fields: The raw JSON Schema object's fields, as decoded from the `inputSchema` `Value`.
+    ///   - onDrop: Invoked once for every JSON Schema construct dropped while parsing a definition.
     /// - Returns: Parsed `$defs`/`definitions` entries, keyed by definition name.
-    private static func parseDefinitions(_ fields: [String: Value]) -> [String: SchemaIR] {
+    private static func parseDefinitions(
+        _ fields: [String: Value], onDrop: SchemaConversionLogHandler
+    ) -> [String: SchemaIR] {
         var result: [String: SchemaIR] = [:]
         for containerKey in definitionsContainerKeys {
             guard case .object(let definitionFields)? = fields[containerKey] else { continue }
             for (definitionName, definitionValue) in definitionFields {
-                result[definitionName] = parseNode(definitionValue, name: definitionName)
+                result[definitionName] = parseNode(
+                    definitionValue, name: definitionName, path: "/\(containerKey)/\(definitionName)",
+                    onDrop: onDrop)
             }
         }
         return result
+    }
+
+    /// The JSON Schema keywords `SchemaConverter` cannot map onto any `DynamicGenerationSchema` structure or guide, in the fixed order they are checked.
+    ///
+    /// A node carrying any of these degrades wholesale to ``SchemaIR/unknown``
+    /// (see `parseNode(_:name:path:onDrop:)`) rather than being partially
+    /// represented, since a partial structural mapping would silently drop the
+    /// permissiveness (or negation, or union) the keyword expresses.
+    /// `additionalProperties: false` is the one exception — it is the JSON
+    /// Schema *default* and is already exactly what a closed
+    /// `DynamicGenerationSchema(properties:)` expresses, so it is not treated
+    /// as a drop.
+    private static let unsupportedKeywords = [
+        "anyOf", "oneOf", "additionalProperties", "patternProperties", "not", "prefixItems",
+    ]
+
+    /// Reports every keyword in ``unsupportedKeywords`` present on `fields`.
+    ///
+    /// - Parameter fields: The raw JSON Schema node's fields to scan.
+    /// - Returns: The unsupported keywords found, in ``unsupportedKeywords`` order.
+    private static func unsupportedKeywordsPresent(in fields: [String: Value]) -> [String] {
+        unsupportedKeywords.filter { keyword in
+            guard let value = fields[keyword] else { return false }
+            if keyword == "additionalProperties", case .bool(false) = value { return false }
+            return true
+        }
     }
 
     /// Parses a single JSON Schema node (object, primitive, array, enum, `$ref`, or unrecognized shape) into `SchemaIR`.
@@ -168,12 +292,33 @@ public enum SchemaConverter {
     /// - Parameters:
     ///   - value: The raw JSON Schema node to parse.
     ///   - name: The name to assign the parsed node (used for nested object/array/enum naming).
+    ///   - path: A slash-delimited JSON path to this node, for ``SchemaConversionLogRecord``.
+    ///   - onDrop: Invoked once for every JSON Schema construct dropped while parsing this node or its descendants.
     /// - Returns: The parsed `SchemaIR` node, or `.unknown` if the shape is not recognized.
-    private static func parseNode(_ value: Value, name: String) -> SchemaIR {
+    private static func parseNode(
+        _ value: Value, name: String, path: String, onDrop: SchemaConversionLogHandler
+    ) -> SchemaIR {
         guard case .object(let fields) = value else { return .unknown }
 
-        if case .string(let reference)? = fields["$ref"], let definitionName = definitionName(fromRef: reference) {
-            return .reference(name: definitionName)
+        // Checked before `$ref`: under JSON Schema 2020-12 (MCP's targeted
+        // dialect), `$ref` is a normal applicator, not a replacement for its
+        // siblings — a sibling `anyOf`/`oneOf`/etc. is meaningful and must
+        // not be silently discarded just because `$ref` itself happens to
+        // resolve.
+        let droppedKeywords = unsupportedKeywordsPresent(in: fields)
+        if !droppedKeywords.isEmpty {
+            for keyword in droppedKeywords {
+                onDrop(SchemaConversionLogRecord(keyword: keyword, path: path))
+            }
+            return .unknown
+        }
+
+        if case .string(let reference)? = fields["$ref"] {
+            if let definitionName = definitionName(fromRef: reference) {
+                return .reference(name: definitionName)
+            }
+            onDrop(SchemaConversionLogRecord(keyword: "$ref", path: path))
+            return .unknown
         }
 
         if case .array(let enumValues)? = fields["enum"] {
@@ -187,18 +332,18 @@ public enum SchemaConverter {
         let typeString = fields["type"]?.stringValue
         switch typeString {
         case "object":
-            return parseObject(fields, name: name)
+            return parseObject(fields, name: name, path: path, onDrop: onDrop)
         case "array":
-            return parseArray(fields, name: name)
+            return parseArray(fields, name: name, path: path, onDrop: onDrop)
         default:
             if let primitive = typeString.flatMap({ primitiveTypeMap[$0] }) {
-                return primitive
+                return applyScalarGuide(to: primitive, fields: fields, path: path, onDrop: onDrop)
             }
             // No recognized `type`, but shaped like an object (e.g. a root
             // `inputSchema` that omits `"type": "object"`, which the MCP
             // spec still treats as an object schema).
             if fields["properties"] != nil {
-                return parseObject(fields, name: name)
+                return parseObject(fields, name: name, path: path, onDrop: onDrop)
             }
             return .unknown
         }
@@ -212,13 +357,139 @@ public enum SchemaConverter {
         "boolean": .boolean,
     ]
 
+    /// Applies a primitive scalar's constraint keywords — `pattern` on `.string`, `minimum`/`maximum`/`exclusiveMinimum`/`exclusiveMaximum` on `.integer`/`.number` — wrapping `primitive` in ``SchemaIR/guided(base:guide:)`` when one applies.
+    ///
+    /// - Parameters:
+    ///   - primitive: The already-resolved primitive base schema.
+    ///   - fields: The node's raw JSON Schema fields, to read constraint keywords from.
+    ///   - path: A slash-delimited JSON path to this node, for ``SchemaConversionLogRecord``.
+    ///   - onDrop: Invoked if `primitive` is `.string` and `pattern` fails to compile as a Swift `Regex`.
+    /// - Returns: `primitive` unchanged if no applicable constraint keyword is present, or `.guided(base: primitive, guide:)` if one is.
+    private static func applyScalarGuide(
+        to primitive: SchemaIR, fields: [String: Value], path: String, onDrop: SchemaConversionLogHandler
+    ) -> SchemaIR {
+        switch primitive {
+        case .integer, .number:
+            return applyNumericRangeGuide(to: primitive, fields: fields, path: path, onDrop: onDrop)
+        case .string:
+            return applyPatternGuide(fields: fields, path: path, onDrop: onDrop)
+        default:
+            return primitive
+        }
+    }
+
+    /// A fixed epsilon nudged inward from a `number` schema's `exclusiveMinimum`/`exclusiveMaximum` to approximate its strict bound as an inclusive one, since `Decimal` has no portable "next representable value" operation (see ``SchemaIR/GuideSpec/numericRange(minimum:maximum:)``).
+    private static let numberExclusiveBoundEpsilon = Decimal(sign: .plus, exponent: -9, significand: 1)
+
+    /// Applies `minimum`/`maximum`/`exclusiveMinimum`/`exclusiveMaximum` to an `.integer` or `.number` base, wrapping it in ``SchemaIR/guided(base:guide:)`` if any bound is present.
+    ///
+    /// - Parameters:
+    ///   - base: The already-resolved `.integer` or `.number` base schema.
+    ///   - fields: The node's raw JSON Schema fields, to read `minimum`/`maximum`/`exclusiveMinimum`/`exclusiveMaximum` from.
+    ///   - path: A slash-delimited JSON path to this node, for ``SchemaConversionLogRecord``.
+    ///   - onDrop: Invoked if the effective minimum and maximum cross (`minimum > maximum`), which describes no value at all and can't be expressed as a `ClosedRange`.
+    /// - Returns: `base` unchanged if no bound keyword is present or the effective bounds cross, or `.guided(base:, guide: .numericRange(...))` if a valid (non-crossing) bound is present.
+    private static func applyNumericRangeGuide(
+        to base: SchemaIR, fields: [String: Value], path: String, onDrop: SchemaConversionLogHandler
+    ) -> SchemaIR {
+        let isInteger = base == .integer
+        let minimum = combinedMinimum(
+            inclusive: decimalValue(fields["minimum"]),
+            exclusive: decimalValue(fields["exclusiveMinimum"]),
+            isInteger: isInteger)
+        let maximum = combinedMaximum(
+            inclusive: decimalValue(fields["maximum"]),
+            exclusive: decimalValue(fields["exclusiveMaximum"]),
+            isInteger: isInteger)
+        guard minimum != nil || maximum != nil else { return base }
+        // A schema whose bounds cross once exclusive bounds are nudged inward
+        // (e.g. `exclusiveMinimum: 5, exclusiveMaximum: 6` on an integer, or
+        // any `minimum`/`maximum` pair with `minimum > maximum`) describes no
+        // value at all. `ClosedRange` traps on a crossed bound, so this is
+        // dropped (logged) instead of constructing one — never throwing and
+        // never crashing, matching the `pattern` guide's fallback policy.
+        if let minimum, let maximum, minimum > maximum {
+            onDrop(SchemaConversionLogRecord(keyword: "minimum", path: path))
+            return base
+        }
+        return .guided(base: base, guide: .numericRange(minimum: minimum, maximum: maximum))
+    }
+
+    /// Combines an inclusive `minimum` with a nudged-inward `exclusiveMinimum`, taking the stricter (greater) of the two when both are present.
+    ///
+    /// - Parameters:
+    ///   - inclusive: The JSON Schema `minimum` value, if present.
+    ///   - exclusive: The JSON Schema `exclusiveMinimum` value, if present.
+    ///   - isInteger: Whether the constrained base is `.integer` (nudged by `1`) rather than `.number` (nudged by ``numberExclusiveBoundEpsilon``).
+    /// - Returns: The effective inclusive minimum, or `nil` if neither was present.
+    private static func combinedMinimum(inclusive: Decimal?, exclusive: Decimal?, isInteger: Bool) -> Decimal? {
+        let nudged = exclusive.map { $0 + (isInteger ? 1 : numberExclusiveBoundEpsilon) }
+        switch (inclusive, nudged) {
+        case (let inclusive?, let nudged?): return max(inclusive, nudged)
+        case (let inclusive?, nil): return inclusive
+        case (nil, let nudged?): return nudged
+        case (nil, nil): return nil
+        }
+    }
+
+    /// Combines an inclusive `maximum` with a nudged-inward `exclusiveMaximum`, taking the stricter (lesser) of the two when both are present.
+    ///
+    /// - Parameters:
+    ///   - inclusive: The JSON Schema `maximum` value, if present.
+    ///   - exclusive: The JSON Schema `exclusiveMaximum` value, if present.
+    ///   - isInteger: Whether the constrained base is `.integer` (nudged by `1`) rather than `.number` (nudged by ``numberExclusiveBoundEpsilon``).
+    /// - Returns: The effective inclusive maximum, or `nil` if neither was present.
+    private static func combinedMaximum(inclusive: Decimal?, exclusive: Decimal?, isInteger: Bool) -> Decimal? {
+        let nudged = exclusive.map { $0 - (isInteger ? 1 : numberExclusiveBoundEpsilon) }
+        switch (inclusive, nudged) {
+        case (let inclusive?, let nudged?): return min(inclusive, nudged)
+        case (let inclusive?, nil): return inclusive
+        case (nil, let nudged?): return nudged
+        case (nil, nil): return nil
+        }
+    }
+
+    /// Reads a JSON Schema numeric keyword's raw `Value` as a `Decimal`.
+    ///
+    /// - Parameter value: The raw `Value` to convert, typically a dictionary lookup like `fields["minimum"]`.
+    /// - Returns: The value as a `Decimal`, or `nil` if `value` is absent or not a JSON number.
+    private static func decimalValue(_ value: Value?) -> Decimal? {
+        switch value {
+        case .int(let int): return Decimal(int)
+        case .double(let double): return Decimal(double)
+        default: return nil
+        }
+    }
+
+    /// Applies `pattern` to a `.string` base, wrapping it in ``SchemaIR/guided(base:guide:)`` if `pattern` compiles as a Swift `Regex`; logs and falls back to a plain `.string` otherwise.
+    ///
+    /// - Parameters:
+    ///   - fields: The node's raw JSON Schema fields, to read `pattern` from.
+    ///   - path: A slash-delimited JSON path to this node, for ``SchemaConversionLogRecord``.
+    ///   - onDrop: Invoked if `pattern` is present but fails to compile as a Swift `Regex`.
+    /// - Returns: `.string` if no `pattern` is present or it fails to compile, or `.guided(base: .string, guide: .pattern(...))` if it compiles.
+    private static func applyPatternGuide(
+        fields: [String: Value], path: String, onDrop: SchemaConversionLogHandler
+    ) -> SchemaIR {
+        guard case .string(let source)? = fields["pattern"] else { return .string }
+        guard (try? Regex(source)) != nil else {
+            onDrop(SchemaConversionLogRecord(keyword: "pattern", path: path))
+            return .string
+        }
+        return .guided(base: .string, guide: .pattern(source))
+    }
+
     /// Parses an object node's `properties` and `required` into an ``SchemaIR/object(name:description:properties:)`` case.
     ///
     /// - Parameters:
     ///   - fields: The object node's raw JSON Schema fields.
     ///   - name: The name to assign the parsed object.
+    ///   - path: A slash-delimited JSON path to this node, for ``SchemaConversionLogRecord``.
+    ///   - onDrop: Invoked once for every JSON Schema construct dropped while parsing a property's schema.
     /// - Returns: The parsed ``SchemaIR/object(name:description:properties:)`` node.
-    private static func parseObject(_ fields: [String: Value], name: String) -> SchemaIR {
+    private static func parseObject(
+        _ fields: [String: Value], name: String, path: String, onDrop: SchemaConversionLogHandler
+    ) -> SchemaIR {
         let requiredNames: Set<String>
         if case .array(let requiredValues)? = fields["required"] {
             requiredNames = Set(requiredValues.compactMap(\.stringValue))
@@ -239,7 +510,9 @@ public enum SchemaConverter {
                     SchemaIR.Property(
                         name: propertyName,
                         description: description,
-                        schema: parseNode(propertySchema, name: "\(name)_\(propertyName)"),
+                        schema: parseNode(
+                            propertySchema, name: "\(name)_\(propertyName)", path: "\(path)/\(propertyName)",
+                            onDrop: onDrop),
                         isOptional: !requiredNames.contains(propertyName)
                     )
                 )
@@ -253,15 +526,64 @@ public enum SchemaConverter {
         )
     }
 
-    /// Parses an array node's `items` into an ``SchemaIR/array(items:)`` case.
+    /// Parses an array node's `items` and `minItems`/`maxItems` into an ``SchemaIR/array(items:)`` case, optionally wrapped in ``SchemaIR/guided(base:guide:)``.
     ///
     /// - Parameters:
     ///   - fields: The array node's raw JSON Schema fields.
     ///   - name: The name to assign the parsed array's item schema.
-    /// - Returns: The parsed ``SchemaIR/array(items:)`` node, with `.unknown` items if `items` is absent.
-    private static func parseArray(_ fields: [String: Value], name: String) -> SchemaIR {
-        guard let items = fields["items"] else { return .array(items: .unknown) }
-        return .array(items: parseNode(items, name: "\(name)_item"))
+    ///   - path: A slash-delimited JSON path to this node, for ``SchemaConversionLogRecord``.
+    ///   - onDrop: Invoked if `items` is the legacy draft-07 tuple form (an array of schemas), or while parsing the item schema's descendants.
+    /// - Returns: The parsed ``SchemaIR/array(items:)`` node (with `.unknown` items if `items` is absent), wrapped in `.guided(_, .count(...))` if `minItems`/`maxItems` is present.
+    private static func parseArray(
+        _ fields: [String: Value], name: String, path: String, onDrop: SchemaConversionLogHandler
+    ) -> SchemaIR {
+        guard let items = fields["items"] else {
+            return applyCountGuide(to: .array(items: .unknown), fields: fields, path: path, onDrop: onDrop)
+        }
+        if case .array = items {
+            // Legacy draft-07 positional tuple validation (`items` as an array
+            // of per-position schemas) has no `DynamicGenerationSchema`
+            // equivalent — a single `arrayOf:` schema can't vary by position.
+            onDrop(SchemaConversionLogRecord(keyword: "items", path: path))
+            return .unknown
+        }
+        let itemsSchema = parseNode(items, name: "\(name)_item", path: "\(path)/items", onDrop: onDrop)
+        return applyCountGuide(to: .array(items: itemsSchema), fields: fields, path: path, onDrop: onDrop)
+    }
+
+    /// Applies `minItems`/`maxItems` to an `.array` base, wrapping it in ``SchemaIR/guided(base:guide:)`` if either is present.
+    ///
+    /// - Parameters:
+    ///   - base: The already-resolved `.array(items:)` base schema.
+    ///   - fields: The array node's raw JSON Schema fields, to read `minItems`/`maxItems` from.
+    ///   - path: A slash-delimited JSON path to this node, for ``SchemaConversionLogRecord``.
+    ///   - onDrop: Invoked if `minItems` and `maxItems` cross (`minItems > maxItems`), which describes no array at all.
+    /// - Returns: `base` unchanged if neither `minItems` nor `maxItems` is present or they cross, or `.guided(base:, guide: .count(...))` if a valid (non-crossing) bound is present.
+    private static func applyCountGuide(
+        to base: SchemaIR, fields: [String: Value], path: String, onDrop: SchemaConversionLogHandler
+    ) -> SchemaIR {
+        let minimum = intValue(fields["minItems"])
+        let maximum = intValue(fields["maxItems"])
+        guard minimum != nil || maximum != nil else { return base }
+        // `minItems > maxItems` is self-contradictory (no array satisfies
+        // it); rather than silently emitting an unsatisfiable schema
+        // verbatim, drop the constraint (logged) and keep the plain
+        // structural array, mirroring `applyNumericRangeGuide`'s crossed-
+        // bound handling.
+        if let minimum, let maximum, minimum > maximum {
+            onDrop(SchemaConversionLogRecord(keyword: "minItems", path: path))
+            return base
+        }
+        return .guided(base: base, guide: .count(minimum: minimum, maximum: maximum))
+    }
+
+    /// Reads a JSON Schema integer keyword's raw `Value` as an `Int`.
+    ///
+    /// - Parameter value: The raw `Value` to convert, typically a dictionary lookup like `fields["minItems"]`.
+    /// - Returns: The value as an `Int`, or `nil` if `value` is absent or not a JSON integer.
+    private static func intValue(_ value: Value?) -> Int? {
+        guard case .int(let int)? = value else { return nil }
+        return int
     }
 
     /// JSON Schema `enum` values are not necessarily strings; render any scalar to its string form so `enum: [1, 2, 3]` still produces sensible choices.
@@ -332,6 +654,8 @@ public enum SchemaConverter {
             return DynamicGenerationSchema(name: name, description: description, anyOf: values)
         case .reference(let name):
             return DynamicGenerationSchema(referenceTo: name)
+        case .guided(let base, let guide):
+            return dynamicSchema(forGuidedBase: base, guide: guide)
         case .string, .integer, .number, .boolean, .unknown:
             // Every primitive case (plus `.unknown`'s permissive fallback) is
             // precomputed in `primitiveDynamicSchemas`; look it up by equality
@@ -346,5 +670,47 @@ public enum SchemaConverter {
     /// - Returns: The equivalent `DynamicGenerationSchema`.
     private static func primitiveSchema<Primitive: Generable>(_ type: Primitive.Type) -> DynamicGenerationSchema {
         DynamicGenerationSchema(type: type)
+    }
+
+    /// Translates a ``SchemaIR/guided(base:guide:)`` node into its `DynamicGenerationSchema` equivalent, applying `guide` as a real Apple `GenerationGuide` (or, for ``SchemaIR/GuideSpec/count(minimum:maximum:)``, `DynamicGenerationSchema`'s dedicated element-count parameters).
+    ///
+    /// - Parameters:
+    ///   - base: The structural schema `guide` constrains.
+    ///   - guide: The runtime constraint to apply.
+    /// - Returns: The equivalent `DynamicGenerationSchema`, with the guide applied. Falls back to the unguided ``dynamicSchema(for:)`` translation of `base` for a `(base, guide)` combination `SchemaConverter` never actually constructs during parsing (each `GuideSpec` case is only ever paired with the base it was parsed from).
+    private static func dynamicSchema(forGuidedBase base: SchemaIR, guide: SchemaIR.GuideSpec) -> DynamicGenerationSchema {
+        switch (base, guide) {
+        case (.integer, .numericRange(let minimum, let maximum)),
+            (.number, .numericRange(let minimum, let maximum)):
+            return DynamicGenerationSchema(type: Decimal.self, guides: [decimalRangeGuide(minimum: minimum, maximum: maximum)])
+        case (.string, .pattern(let source)):
+            guard let regex = try? Regex(source) else { return dynamicSchema(for: base) }
+            return DynamicGenerationSchema(type: String.self, guides: [.pattern(regex)])
+        case (.array(let items), .count(let minimum, let maximum)):
+            return DynamicGenerationSchema(
+                arrayOf: dynamicSchema(for: items), minimumElements: minimum, maximumElements: maximum)
+        default:
+            return dynamicSchema(for: base)
+        }
+    }
+
+    /// Builds the `GenerationGuide<Decimal>` for a ``SchemaIR/GuideSpec/numericRange(minimum:maximum:)``.
+    ///
+    /// - Parameters:
+    ///   - minimum: The effective inclusive minimum, if any.
+    ///   - maximum: The effective inclusive maximum, if any.
+    /// - Returns: `.range(_:)` if both bounds are present, `.minimum(_:)`/`.maximum(_:)` if only one is.
+    private static func decimalRangeGuide(minimum: Decimal?, maximum: Decimal?) -> GenerationGuide<Decimal> {
+        switch (minimum, maximum) {
+        case (let minimum?, let maximum?):
+            return .range(minimum...maximum)
+        case (let minimum?, nil):
+            return .minimum(minimum)
+        case (nil, let maximum?):
+            return .maximum(maximum)
+        case (nil, nil):
+            preconditionFailure(
+                "SchemaConverter never constructs .numericRange(nil, nil); applyNumericRangeGuide(to:fields:) only wraps a base in .guided when at least one bound is present.")
+        }
     }
 }
