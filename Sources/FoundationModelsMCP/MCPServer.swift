@@ -191,6 +191,13 @@ public actor MCPServer {
     /// ``connect(transport:)``, in `tools/list` page order.
     private var discoveredTools: [MCPTool] = []
 
+    /// Incremented every time ``discoveredTools`` is replaced by a successful
+    /// ``applyConnect(transport:generation:)`` — the per-server generation
+    /// number ``catalog``'s snapshot exposes as ``ToolCatalog/epoch``.
+    /// Starts at `0` (before any successful connect) and is never reset for
+    /// the life of this actor.
+    private var catalogEpoch = 0
+
     /// The clock ``connect(transport:backoffPolicy:)`` sleeps on between
     /// retry attempts — injectable so tests can substitute a virtual clock
     /// (e.g. a manual/fake clock) instead of waiting out a real backoff
@@ -568,6 +575,7 @@ public actor MCPServer {
                     name: hostSuppliedName ?? initializeResult.serverInfo.name)
             }
             discoveredTools = tools
+            catalogEpoch += 1
             state = .ready
         } catch {
             guard generation == connectGeneration else {
@@ -632,6 +640,36 @@ public actor MCPServer {
     /// - Throws: Whatever ``mcpTools()`` throws.
     public func foundationModelsTools() throws -> [any FoundationModels.Tool] {
         try mcpTools().map { $0 as any FoundationModels.Tool }
+    }
+
+    /// The current catalog snapshot: this server's ``identity``,
+    /// ``catalogEpoch``, ``state``, and every currently-discovered tool
+    /// converted to a ``ToolDescriptor``.
+    ///
+    /// Unlike ``mcpTools()``, whose ``MCPServerError/notReady(_:)`` guard is
+    /// keyed on ``state`` being exactly ``MCPServerState/ready``, this
+    /// property's guard is keyed on ``identity`` having ever been
+    /// established — so a snapshot taken while ``state`` is
+    /// ``MCPServerState/faulted(_:)`` after a prior successful connect still
+    /// succeeds, reporting the last-known tools alongside the current
+    /// (faulted) state, exactly as ``plan.md``'s Dynamic discovery decision
+    /// calls for.
+    ///
+    /// - Throws: ``MCPServerError/notReady(_:)`` if ``identity`` has never
+    ///   been established — i.e. no ``connect(transport:)`` call has ever
+    ///   fully succeeded.
+    public var catalog: ToolCatalog {
+        get throws {
+            guard let identity else {
+                throw MCPServerError.notReady(state)
+            }
+            return ToolCatalog(
+                identity: identity,
+                epoch: catalogEpoch,
+                state: state,
+                tools: discoveredTools.map(ToolDescriptor.init(mcpTool:))
+            )
+        }
     }
 
     /// Fetches every `tools/list` page, following `nextCursor` until the
