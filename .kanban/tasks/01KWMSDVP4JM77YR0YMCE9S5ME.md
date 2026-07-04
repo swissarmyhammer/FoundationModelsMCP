@@ -1,8 +1,39 @@
 ---
+comments:
+- actor: claude-code
+  id: 01kwpszhq91qv8x8nt6g7b8w39
+  text: |-
+    Implemented via TDD. Wrote Tests/FoundationModelsMCPTests/ScriptedServerSelfTests.swift (8 self-tests, scenarios 3-10) and Tests/FoundationModelsMCPTests/PackageDependencyTests.swift first, confirmed RED (missing MCPTestServer module → build failure), then implemented:
+
+    - Package.swift: added `MCPTestServer` library target (deps: MCP, Logging) and `MCPTestServerCLI` executable target (stdio wrapper). `FoundationModelsMCP` library target's dependency array is untouched (MCP only). Test target now also depends on MCPTestServer.
+    - Sources/MCPTestServer/ScriptedTool.swift — tool definition+handler pair
+    - Sources/MCPTestServer/JSONSchemaBuilder.swift — small shared JSON-Schema literal builder
+    - Sources/MCPTestServer/ScriptedServer.swift — the core actor: tool registry (add/remove/replace), paginated tools/list, tools/list_changed emission (incl. burst), scheduled mutation-on-timer, progress-reporting tool factory, eliciting tool factory, transport-dropping tool factory + dropTransport(), cancelled-notification recording + polling wait helper
+    - Sources/MCPTestServer/EchoTool.swift — scenario 1
+    - Sources/MCPTestServer/FilesystemToolKit.swift — scenario 2 (VirtualFilesystem actor + list/read/write tools)
+    - Sources/MCPTestServer/FlakyConnectTransport.swift — scenario 6 transport wrapper
+    - Sources/MCPTestServerCLI/main.swift — minimal stdio executable stub (echo + filesystem tools), verified working end-to-end against a real initialize request over stdin/stdout
+
+    Design judgment calls (documented in source):
+    1. FlakyConnectTransport can't synchronously delegate `receive()`/`logger` to the wrapped transport (both are non-async Transport protocol requirements, and the wrapped transport is a different actor — crossing requires `await`, which a non-async method can't do). Fixed by caching the wrapped transport's receive() stream right after a successful connect() (mirrors real caller sequencing: connect() always precedes receive()), and using a fresh no-op logger instead of copying the wrapped transport's.
+    2. "transport drop mid-call" self-test: since a dropped-mid-call response is silently discarded by the SDK's own request-handling task (`Task { _ = try? await self.handleRequest(...) }`), the client's pending call genuinely never resolves on its own. The test proves the drop worked by calling `client.disconnect()` afterward (the only thing that resolves a still-pending request) and asserting the call *then* throws — if the drop hadn't worked, the call would already hold a successful result and the assertion would fail.
+    3. PackageDependencyTests.swift proves the library-target-excludes-MCPTestServer acceptance criterion by parsing Package.swift's source text (scoped to the `targets:` section, balanced-paren extraction of the exact target block) rather than a full SwiftPM dependency-graph introspection (no such API exists for use from a test binary) — documented as a deliberately narrow, practically-verifiable check.
+
+    Ran an adversarial double-check review (independent `swift build && swift test` verification + line-level review). It found no correctness bugs in the scripting primitives (verified the CallTool.Result overload resolution, the Transport protocol async/non-async split, the pagination cursor math, and the client.disconnect() resolution behavior all against the actual vendored swift-sdk source). It flagged two fixed-`Task.sleep`-then-assert tests (tool-mutation-timer and progress-cadence) as a flakiness risk versus the poll-until-condition pattern already used elsewhere in the file — fixed by adding a shared `poll(timeout:until:)` helper and using it in both places. Full suite re-verified green after the fix (113/113, and those two tests got noticeably faster: 0.233s→0.037s and 0.116s→0.059s, since they no longer wait out the full fixed delay).
+
+    Verification commands run (all green, zero warnings):
+    - `swift build` (clean, from `rm -rf .build/out`) — zero warnings
+    - `swift build --build-tests` — zero warnings
+    - `swift test --filter ScriptedServerSelf` — 8/8 passed
+    - `swift test` — 113/113 passed across 10 suites
+    - Manual smoke of MCPTestServerCLI over real stdio: sent a JSON-RPC `initialize` request, got a correct response back
+
+    Leaving task in `doing` per /implement process — ready for /review.
+  timestamp: 2026-07-04T14:54:33.705445+00:00
 depends_on:
 - 01KWMRYGMXC08VX2W7P2DK2X0W
-position_column: todo
-position_ordinal: '9580'
+position_column: doing
+position_ordinal: '80'
 title: 'Test fixture: ScriptedServer utility target with full scenario scripting'
 ---
 ## What
