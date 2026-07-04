@@ -21,7 +21,8 @@ let package = Package(
         .target(
             name: "FoundationModelsMCP",
             dependencies: [
-                .product(name: "MCP", package: "swift-sdk")
+                .product(name: "MCP", package: "swift-sdk"),
+                .product(name: "Logging", package: "swift-log"),
             ],
             linkerSettings: [
                 .linkedFramework("FoundationModels")

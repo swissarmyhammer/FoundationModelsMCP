@@ -54,8 +54,8 @@ comments:
 depends_on:
 - 01KWMS0CJ2DMWM46AB5JE50TAR
 - 01KWMSDVP4JM77YR0YMCE9S5ME
-position_column: doing
-position_ordinal: '80'
+position_column: done
+position_ordinal: '8980'
 title: 'MCPServer core: async discovery, pagination to exhaustion, readiness states'
 ---
 ## What
