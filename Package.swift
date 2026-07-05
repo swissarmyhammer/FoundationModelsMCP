@@ -52,6 +52,11 @@ let exampleTargetSpecs: [(name: String, path: String)] = [
     ("RemoteHTTP", "Examples/RemoteHTTP"),
 ]
 
+/// The four `Examples/` executable targets, generated from `exampleTargetSpecs`.
+///
+/// Maps each spec's name and path into an `.executableTarget()` sharing the
+/// common `exampleTargetDependencies` and `foundationModelsLinkerSettings`,
+/// so adding or renaming an example only touches the specs table above.
 let exampleTargets: [Target] = exampleTargetSpecs.map { spec in
     .executableTarget(
         name: spec.name,
