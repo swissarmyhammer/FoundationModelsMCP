@@ -115,4 +115,95 @@ struct PackageDependencyTests {
         let productsSection = source[productsRange.upperBound..<targetsRange.lowerBound]
         #expect(!productsSection.contains("MCPTestServer"))
     }
+
+    // MARK: - Examples never import the test target
+
+    /// The `Examples/` targets whose `Package.swift` declaration must never
+    /// depend on `MCPTestServer` — the same "examples never import the test
+    /// target" constraint ``libraryTargetExcludesTestServer()`` already
+    /// enforces for the shipped library, extended to every target this task
+    /// introduced.
+    private static let exampleTargetNames = [
+        "ExampleSupport", "EchoTool", "FileAssistant", "ToolPicking", "RemoteHTTP",
+    ]
+
+    @Test(
+        "every Examples/ target's dependency list never mentions MCPTestServer",
+        arguments: exampleTargetNames
+    )
+    func exampleTargetExcludesTestServer(targetName: String) throws {
+        let source = try String(contentsOf: Self.packageManifestURL, encoding: .utf8)
+        let declaration = try Self.targetDeclaration(named: targetName, in: source)
+
+        #expect(!declaration.contains("MCPTestServer"))
+    }
+
+    @Test("the shared exampleTargetDependencies constant (every Examples/ executableTarget's dependency list) never mentions MCPTestServer")
+    func exampleTargetDependenciesConstantExcludesTestServer() throws {
+        // `EchoTool`/`FileAssistant`/`ToolPicking`/`RemoteHTTP` each pass
+        // `dependencies: exampleTargetDependencies` rather than spelling out
+        // their dependency list inline, so ``exampleTargetExcludesTestServer(targetName:)``
+        // above — which only inspects each target's own declaration text —
+        // would not catch "MCPTestServer" added to that *shared* constant
+        // instead of to an individual target. This checks the constant's own
+        // declaration directly, closing that gap.
+        let source = try String(contentsOf: Self.packageManifestURL, encoding: .utf8)
+        guard let constantStart = source.range(of: "let exampleTargetDependencies"),
+            let closingBracket = source[constantStart.upperBound...].range(of: "]")
+        else {
+            Issue.record("Could not locate the exampleTargetDependencies constant in Package.swift")
+            return
+        }
+
+        let constantDeclaration = source[constantStart.lowerBound..<closingBracket.upperBound]
+        #expect(!constantDeclaration.contains("MCPTestServer"))
+    }
+
+    /// Locates the repository's `Examples/` directory, two directories above
+    /// this test file (`Tests/FoundationModelsMCPTests/` → `Tests/` → repo
+    /// root → `Examples/`).
+    private static var examplesDirectoryURL: URL {
+        Self.packageManifestURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("Examples", isDirectory: true)
+    }
+
+    /// Every `.swift` file under ``examplesDirectoryURL``, found recursively.
+    ///
+    /// - Returns: Each file's URL.
+    private static func exampleSwiftFileURLs() throws -> [URL] {
+        guard
+            let enumerator = FileManager.default.enumerator(
+                at: examplesDirectoryURL, includingPropertiesForKeys: nil)
+        else {
+            throw ExamplesDirectoryNotFound()
+        }
+        return enumerator.compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" }
+    }
+
+    private struct ExamplesDirectoryNotFound: Error, CustomStringConvertible {
+        var description: String { "Could not enumerate the Examples/ directory" }
+    }
+
+    @Test("no file under Examples/ imports the MCPTestServer test-fixture target")
+    func examplesNeverImportMCPTestServer() throws {
+        for url in try Self.exampleSwiftFileURLs() {
+            let contents = try String(contentsOf: url, encoding: .utf8)
+            #expect(
+                !contents.contains("import MCPTestServer"),
+                "\(url.lastPathComponent) must not import the MCPTestServer test-fixture target"
+            )
+        }
+    }
+
+    @Test("no file under Examples/ uses @testable import")
+    func examplesNeverUseTestableImport() throws {
+        for url in try Self.exampleSwiftFileURLs() {
+            let contents = try String(contentsOf: url, encoding: .utf8)
+            #expect(
+                !contents.contains("@testable import"),
+                "\(url.lastPathComponent) must not use @testable import (examples never import the test target)"
+            )
+        }
+    }
 }
