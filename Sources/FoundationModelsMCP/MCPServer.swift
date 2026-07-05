@@ -733,6 +733,8 @@ public actor MCPServer {
     ///   - timeout: The full timeout duration to sleep in, between resets.
     /// - Returns: Always ``CallOutcome/timedOut``, once a full `timeout`
     ///   interval elapses with no reset.
+    /// - Throws: `CancellationError` if the calling `Task` is cancelled while
+    ///   suspended in `Task.sleep(for:)`.
     private func watchForTimeout(progressToken: ProgressToken, timeout: Duration) async throws -> CallOutcome {
         while true {
             let observedResetCount = activeCalls[progressToken]?.deadline.resetCount ?? 0
