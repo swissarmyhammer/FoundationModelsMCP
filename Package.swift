@@ -3,15 +3,19 @@ import PackageDescription
 
 /// Linker settings for every target that directly imports the system
 /// `FoundationModels` framework — the library target itself, `ExampleSupport`,
-/// and every `Examples/` executable target. Shared so the framework name
-/// isn't repeated as a literal at each of those six call sites.
+/// and every `Examples/` executable target.
+///
+/// Shared so the framework name isn't repeated as a literal at each of
+/// those six call sites.
 let foundationModelsLinkerSettings: [LinkerSetting] = [
     .linkedFramework("FoundationModels")
 ]
 
 /// The swift-sdk's `MCP` product — every target in this manifest depends on
-/// it directly (protocol types, `Value`, transports, `Client`). Shared so
-/// the package name isn't repeated as a literal at each of those call sites.
+/// it directly (protocol types, `Value`, transports, `Client`).
+///
+/// Shared so the package name isn't repeated as a literal at each of those
+/// call sites.
 let mcpProduct: Target.Dependency = .product(name: "MCP", package: "swift-sdk")
 
 /// The shared dependency list for every `Examples/` executable target
@@ -27,6 +31,7 @@ let exampleTargetDependencies: [Target.Dependency] = [
 /// The four `Examples/` executable targets (plan.md → Examples §1–4), all
 /// sharing the same dependencies, linker settings, and target shape —
 /// differing only in name and source path:
+///
 /// - `EchoTool` (§1): spawn `MCPTestServerCLI` in echo mode, wrap it in
 ///   `MCPServer`, and drive one tool call on the system model.
 /// - `FileAssistant` (§2): a multi-tool stdio filesystem server; the model

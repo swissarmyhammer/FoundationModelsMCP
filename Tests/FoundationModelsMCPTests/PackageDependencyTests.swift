@@ -122,7 +122,9 @@ struct PackageDependencyTests {
     /// `Package.swift` (a bare `.target(name: "...", ...)` /
     /// `.executableTarget(name: "...", ...)` call), and so can be checked by
     /// ``targetDeclaration(named:in:)``'s textual `name: "<targetName>",`
-    /// search. `EchoTool`/`FileAssistant`/`ToolPicking`/`RemoteHTTP` are
+    /// search.
+    ///
+    /// `EchoTool`/`FileAssistant`/`ToolPicking`/`RemoteHTTP` are
     /// *not* declared this way — they're generated from `exampleTargetSpecs`
     /// mapped through one shared `.executableTarget()` call, so there is no
     /// `name: "EchoTool",` text to find. Those four are covered instead by
