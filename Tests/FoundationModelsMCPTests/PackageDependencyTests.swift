@@ -118,17 +118,22 @@ struct PackageDependencyTests {
 
     // MARK: - Examples never import the test target
 
-    /// The `Examples/` targets whose `Package.swift` declaration must never
-    /// depend on `MCPTestServer` — the same "examples never import the test
-    /// target" constraint ``libraryTargetExcludesTestServer()`` already
-    /// enforces for the shipped library, extended to every target this task
-    /// introduced.
+    /// The `Examples/` targets that are still declared literally in
+    /// `Package.swift` (a bare `.target(name: "...", ...)` /
+    /// `.executableTarget(name: "...", ...)` call), and so can be checked by
+    /// ``targetDeclaration(named:in:)``'s textual `name: "<targetName>",`
+    /// search. `EchoTool`/`FileAssistant`/`ToolPicking`/`RemoteHTTP` are
+    /// *not* declared this way — they're generated from `exampleTargetSpecs`
+    /// mapped through one shared `.executableTarget()` call, so there is no
+    /// `name: "EchoTool",` text to find. Those four are covered instead by
+    /// ``exampleTargetSpecsDeclaresExpectedNames()`` and
+    /// ``exampleTargetsMapUsesSharedDependencies()`` below.
     private static let exampleTargetNames = [
-        "ExampleSupport", "EchoTool", "FileAssistant", "ToolPicking", "RemoteHTTP",
+        "ExampleSupport"
     ]
 
     @Test(
-        "every Examples/ target's dependency list never mentions MCPTestServer",
+        "every literally-declared Examples/ target's dependency list never mentions MCPTestServer",
         arguments: exampleTargetNames
     )
     func exampleTargetExcludesTestServer(targetName: String) throws {
@@ -157,6 +162,48 @@ struct PackageDependencyTests {
 
         let constantDeclaration = source[constantStart.lowerBound..<closingBracket.upperBound]
         #expect(!constantDeclaration.contains("MCPTestServer"))
+    }
+
+    /// The four `Examples/` executable targets generated from
+    /// `exampleTargetSpecs` (rather than four hand-duplicated
+    /// `.executableTarget()` blocks — see `Package.swift`).
+    private static let generatedExampleTargetNames = [
+        "EchoTool", "FileAssistant", "ToolPicking", "RemoteHTTP",
+    ]
+
+    @Test("exampleTargetSpecs declares exactly the four generated Examples/ targets")
+    func exampleTargetSpecsDeclaresExpectedNames() throws {
+        let source = try String(contentsOf: Self.packageManifestURL, encoding: .utf8)
+        guard let specsStart = source.range(of: "let exampleTargetSpecs"),
+            let closingBracket = source[specsStart.upperBound...].range(of: "\n]")
+        else {
+            Issue.record("Could not locate the exampleTargetSpecs constant in Package.swift")
+            return
+        }
+
+        let specsDeclaration = source[specsStart.lowerBound..<closingBracket.upperBound]
+        for name in Self.generatedExampleTargetNames {
+            #expect(
+                specsDeclaration.contains("\"\(name)\""),
+                "exampleTargetSpecs is missing an entry for \"\(name)\"")
+        }
+    }
+
+    @Test(
+        "the exampleTargets map wires every generated target to the shared exampleTargetDependencies constant, never MCPTestServer directly"
+    )
+    func exampleTargetsMapUsesSharedDependencies() throws {
+        let source = try String(contentsOf: Self.packageManifestURL, encoding: .utf8)
+        guard let mapStart = source.range(of: "let exampleTargets: [Target]"),
+            let closingBrace = source[mapStart.upperBound...].range(of: "\n}")
+        else {
+            Issue.record("Could not locate the exampleTargets map in Package.swift")
+            return
+        }
+
+        let mapDeclaration = source[mapStart.lowerBound..<closingBrace.upperBound]
+        #expect(mapDeclaration.contains("dependencies: exampleTargetDependencies"))
+        #expect(!mapDeclaration.contains("MCPTestServer"))
     }
 
     /// Locates the repository's `Examples/` directory, two directories above

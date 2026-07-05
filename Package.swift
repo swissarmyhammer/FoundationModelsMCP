@@ -24,6 +24,38 @@ let exampleTargetDependencies: [Target.Dependency] = [
     mcpProduct,
 ]
 
+/// The four `Examples/` executable targets (plan.md → Examples §1–4), all
+/// sharing the same dependencies, linker settings, and target shape —
+/// differing only in name and source path:
+/// - `EchoTool` (§1): spawn `MCPTestServerCLI` in echo mode, wrap it in
+///   `MCPServer`, and drive one tool call on the system model.
+/// - `FileAssistant` (§2): a multi-tool stdio filesystem server; the model
+///   picks among several tools, including `isError` bubbling on a
+///   missing-file prompt.
+/// - `ToolPicking` (§3): one loose `MCPTool` plus a native Swift `Tool` in
+///   the same session, showing `MCPToolProvider` flattening.
+/// - `RemoteHTTP` (§4): `HTTPClientTransport` with a host-supplied bearer
+///   token, demonstrating the delegated-auth decision.
+///
+/// Expressed as a data table mapped into targets (rather than four
+/// hand-duplicated `.executableTarget()` blocks) so the shared shape can't
+/// drift out of lockstep as examples are added or renamed.
+let exampleTargetSpecs: [(name: String, path: String)] = [
+    ("EchoTool", "Examples/EchoTool"),
+    ("FileAssistant", "Examples/FileAssistant"),
+    ("ToolPicking", "Examples/ToolPicking"),
+    ("RemoteHTTP", "Examples/RemoteHTTP"),
+]
+
+let exampleTargets: [Target] = exampleTargetSpecs.map { spec in
+    .executableTarget(
+        name: spec.name,
+        dependencies: exampleTargetDependencies,
+        path: spec.path,
+        linkerSettings: foundationModelsLinkerSettings
+    )
+}
+
 /// The `FoundationModelsMCP` package manifest: one shipped library target
 /// (`FoundationModelsMCP`), the test-fixture-only `MCPTestServer` utility
 /// (never a library dependency — see
@@ -95,42 +127,7 @@ let package = Package(
             path: "Examples/Support",
             linkerSettings: foundationModelsLinkerSettings
         ),
-        // Examples/ §1 — the ~20-line hello world: spawn MCPTestServerCLI
-        // in echo mode, wrap it in MCPServer, and drive one tool call on the
-        // system model. See plan.md → Examples.
-        .executableTarget(
-            name: "EchoTool",
-            dependencies: exampleTargetDependencies,
-            path: "Examples/EchoTool",
-            linkerSettings: foundationModelsLinkerSettings
-        ),
-        // Examples/ §2 — a real multi-tool server (stdio filesystem mode):
-        // the model picks among several tools, including isError bubbling on
-        // a missing-file prompt. See plan.md → Examples.
-        .executableTarget(
-            name: "FileAssistant",
-            dependencies: exampleTargetDependencies,
-            path: "Examples/FileAssistant",
-            linkerSettings: foundationModelsLinkerSettings
-        ),
-        // Examples/ §3 — provider composition: one loose MCPTool plus a
-        // native Swift Tool in the same session, showing MCPToolProvider
-        // flattening. See plan.md → Examples.
-        .executableTarget(
-            name: "ToolPicking",
-            dependencies: exampleTargetDependencies,
-            path: "Examples/ToolPicking",
-            linkerSettings: foundationModelsLinkerSettings
-        ),
-        // Examples/ §4 — HTTPClientTransport with a host-supplied bearer
-        // token, demonstrating the delegated-auth decision. See plan.md →
-        // Examples.
-        .executableTarget(
-            name: "RemoteHTTP",
-            dependencies: exampleTargetDependencies,
-            path: "Examples/RemoteHTTP",
-            linkerSettings: foundationModelsLinkerSettings
-        ),
+    ] + exampleTargets + [
         .testTarget(
             name: "FoundationModelsMCPTests",
             dependencies: [
