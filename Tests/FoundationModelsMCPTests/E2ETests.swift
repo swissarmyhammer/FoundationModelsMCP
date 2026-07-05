@@ -6,8 +6,9 @@ import Testing
 import FoundationModels
 import MCP
 
-/// The gated end-to-end acceptance test for M4: a `LanguageModelSession`
-/// built via ``LanguageModelSession/init(model:mcp:instructions:)`` on the
+/// Gated end-to-end test that exercises `LanguageModelSession` with a real stdio MCP server subprocess.
+///
+/// Built via ``LanguageModelSession/init(model:mcp:instructions:)`` on the
 /// **system model**, driven against a **real, out-of-process** MCP server —
 /// the `MCPTestServerCLI` executable, spawned as a subprocess and wired to a
 /// real `StdioTransport`, not an in-process `InMemoryTransport` pairing or a
@@ -34,18 +35,19 @@ import MCP
 ///    downloading) still gets a clean skip rather than a crash or failure.
 @Suite("E2E")
 struct E2ETests {
-    /// The environment variable that must be set to exactly `"1"` to run this
-    /// suite's gated test — see the type-level doc's gating section.
+    /// The environment variable that must be set to exactly `"1"` to enable this gated test.
+    ///
+    /// See the type-level doc's gating section for the full two-part gate.
     private static let e2eEnvironmentVariableName = "FOUNDATIONMODELSMCP_E2E"
 
-    /// The name of the tool this test drives the model into calling —
+    /// The name of the tool this test drives the model to call.
+    ///
     /// `MCPTestServerCLI`'s registered echo tool (see
     /// `Sources/MCPTestServerCLI/main.swift`), which echoes its `text`
     /// argument back verbatim.
     private static let echoToolName = "echo"
 
-    /// Whether ``e2eEnvironmentVariableName`` is set to `"1"` in this
-    /// process's environment.
+    /// Whether ``e2eEnvironmentVariableName`` is set to `"1"` in this process's environment.
     private static var isE2EFlagSet: Bool {
         ProcessInfo.processInfo.environment[e2eEnvironmentVariableName] == "1"
     }
@@ -73,7 +75,8 @@ struct E2ETests {
         )
     )
     func systemModelCallsRealToolThroughStdioServer() async throws {
-        let process = try Self.makeTestServerProcess()
+        let process = Process()
+        process.executableURL = try Self.testServerCLIExecutableURL()
         let stdinPipe = Pipe()
         let stdoutPipe = Pipe()
         process.standardInput = stdinPipe
@@ -120,8 +123,9 @@ struct E2ETests {
 
     // MARK: - Transcript assertions
 
-    /// Whether `transcript` contains a `toolCalls` entry naming `toolName` —
-    /// proof the model actually decided to invoke the tool, independent of
+    /// Whether `transcript` contains a `toolCalls` entry naming `toolName`.
+    ///
+    /// Proof the model actually decided to invoke the tool, independent of
     /// whatever text the model went on to say about the result.
     ///
     /// - Parameters:
@@ -136,9 +140,10 @@ struct E2ETests {
         }
     }
 
-    /// Whether `transcript` contains a `toolOutput` entry from `toolName`
-    /// whose rendered text includes `text` — proof the tool's actual result
-    /// (not just the model's paraphrase) reached the session.
+    /// Whether `transcript` contains a `toolOutput` entry from `toolName` whose rendered text includes `text`.
+    ///
+    /// Proof the tool's actual result (not just the model's paraphrase)
+    /// reached the session.
     ///
     /// - Parameters:
     ///   - toolName: The tool name the output must be attributed to.
@@ -160,12 +165,11 @@ struct E2ETests {
 
     // MARK: - Subprocess setup
 
-    /// Errors specific to locating and launching this test's spawned
-    /// `MCPTestServerCLI` subprocess.
+    /// Errors specific to locating and launching this test's spawned `MCPTestServerCLI` subprocess.
     private enum SetupError: Error, CustomStringConvertible {
-        /// No executable file exists at the path this test expected
-        /// `MCPTestServerCLI` to have been built to, carried for
-        /// diagnostics.
+        /// No executable file exists at the path this test expected `MCPTestServerCLI` to have been built to.
+        ///
+        /// Carried for diagnostics.
         case testServerCLINotFound(String)
 
         var description: String {
@@ -177,21 +181,11 @@ struct E2ETests {
         }
     }
 
-    /// Builds an unstarted `Process` configured to run the sibling
-    /// `MCPTestServerCLI` executable.
+    /// Locates the build products directory containing this test binary.
     ///
-    /// - Returns: The configured, not-yet-started process.
-    /// - Throws: ``SetupError/testServerCLINotFound(_:)`` if the executable
-    ///   can't be located.
-    private static func makeTestServerProcess() throws -> Process {
-        let process = Process()
-        process.executableURL = try testServerCLIExecutableURL()
-        return process
-    }
-
-    /// Locates the build products directory (e.g. `.build/debug`) this test
-    /// binary was built into, so ``testServerCLIExecutableURL()`` can find
-    /// the sibling `MCPTestServerCLI` executable SwiftPM builds alongside it.
+    /// This is the directory (e.g. `.build/debug`) so
+    /// ``testServerCLIExecutableURL()`` can find the sibling
+    /// `MCPTestServerCLI` executable SwiftPM builds alongside it.
     ///
     /// On Darwin, `swift test` hosts the swift-testing runner inside an
     /// `.xctest` bundle launched by a separate `swiftpm-testing-helper`
@@ -219,8 +213,7 @@ struct E2ETests {
         return URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent()
     }
 
-    /// Locates the `MCPTestServerCLI` executable SwiftPM builds alongside
-    /// this test binary.
+    /// Locates the `MCPTestServerCLI` executable SwiftPM builds alongside this test binary.
     ///
     /// - Returns: The executable's file URL.
     /// - Throws: ``SetupError/testServerCLINotFound(_:)`` if no executable
