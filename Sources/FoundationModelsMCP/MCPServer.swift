@@ -191,12 +191,60 @@ public actor MCPServer {
     /// ``connect(transport:)``, in `tools/list` page order.
     private var discoveredTools: [MCPTool] = []
 
-    /// Incremented every time ``discoveredTools`` is replaced by a successful
-    /// ``applyConnect(transport:generation:)`` — the per-server generation
-    /// number ``catalog``'s snapshot exposes as ``ToolCatalog/epoch``.
-    /// Starts at `0` (before any successful connect) and is never reset for
-    /// the life of this actor.
+    /// Incremented by every ``emitCatalogSnapshot()`` call — the per-server
+    /// generation number ``catalog``'s snapshot exposes as
+    /// ``ToolCatalog/epoch``. Starts at `0` (before any successful connect)
+    /// and is never reset for the life of this actor.
     private var catalogEpoch = 0
+
+    /// The stream of versioned ``ToolCatalog`` snapshots this server emits —
+    /// see ``emitCatalogSnapshot()`` for every point that yields to it:
+    /// a successful connect/reconnect, a failed reconnect, a mid-call
+    /// transport fault, and a coalesced `tools/list_changed` re-list (see
+    /// ``coalesceAndRelist()``).
+    ///
+    /// Every emission is a complete, self-contained snapshot a consumer can
+    /// start from with no prior state — never a delta — per `plan.md`'s
+    /// Dynamic discovery decision. No emission occurs before the first
+    /// successful connect, since ``identity`` (required to construct a
+    /// ``ToolCatalog``) has not yet been established.
+    ///
+    /// - Important: Backed by a single continuation, like any `AsyncStream`:
+    ///   only one concurrent consumer should iterate this stream at a time —
+    ///   a second concurrent iterator would only ever see whichever
+    ///   snapshots the first one hasn't already consumed, never a copy of
+    ///   every snapshot.
+    public let catalogUpdates: AsyncStream<ToolCatalog>
+
+    /// The continuation ``emitCatalogSnapshot()`` yields new snapshots to —
+    /// paired with ``catalogUpdates`` once, at construction time.
+    private let catalogContinuation: AsyncStream<ToolCatalog>.Continuation
+
+    /// Whether ``registerToolListChangedHandler()`` has already run for this
+    /// actor — guards against re-registering on every reconnect, since
+    /// `MCP.Client.onNotification(_:handler:)` appends a new handler to its
+    /// list rather than replacing it (unlike `withMethodHandler`, whose
+    /// per-method single-handler map is genuinely idempotent to re-register
+    /// on every attempt).
+    private var hasRegisteredToolListChangedHandler = false
+
+    /// The generation ``coalesceAndRelist()`` polls to detect whether
+    /// another `tools/list_changed` notification arrived during its most
+    /// recent coalescing window — advanced by every call to
+    /// ``handleToolListChangedNotification()``, never reset.
+    private var toolListChangedGeneration = 0
+
+    /// Whether a ``coalesceAndRelist()`` task is already watching the
+    /// current burst for quiet — guards
+    /// ``handleToolListChangedNotification()`` against starting a second,
+    /// redundant watcher while one is already running.
+    private var isCoalescingToolListChanged = false
+
+    /// How long a burst of `tools/list_changed` notifications must go quiet
+    /// before ``coalesceAndRelist()`` performs the actual re-list — measured
+    /// on ``clock``, so a virtual clock in tests exercises the full
+    /// coalescing window with no real delay.
+    private static let toolListChangedCoalesceWindow: Duration = .milliseconds(50)
 
     /// The clock ``connect(transport:backoffPolicy:)`` sleeps on between
     /// retry attempts — injectable so tests can substitute a virtual clock
@@ -278,6 +326,12 @@ public actor MCPServer {
         self.elicitationCoordinator = elicitationCoordinator
         self.clock = clock
         self.logger = logger
+
+        var catalogContinuation: AsyncStream<ToolCatalog>.Continuation!
+        self.catalogUpdates = AsyncStream { continuation in
+            catalogContinuation = continuation
+        }
+        self.catalogContinuation = catalogContinuation
     }
 
     /// Connects `client` to `transport`, then discovers every tool the
@@ -420,6 +474,7 @@ public actor MCPServer {
                 "MCPServer mid-call transport fault",
                 metadata: [Self.serverMetadataKey: "\(identityNameForDiagnostics)", "tool": "\(name)", Self.errorMetadataKey: "\(error)"])
             state = .faulted(String(describing: error))
+            emitCatalogSnapshot()
             await reconnectAfterFault()
             return ToolContentRenderer.render(result: Self.faultResult(for: error))
         }
@@ -561,6 +616,10 @@ public actor MCPServer {
         if let elicitationCoordinator {
             await declareElicitationCapabilityAndRegisterHandler(coordinator: elicitationCoordinator)
         }
+        if !hasRegisteredToolListChangedHandler {
+            hasRegisteredToolListChangedHandler = true
+            await registerToolListChangedHandler()
+        }
         do {
             let initializeResult = try await client.connect(transport: transport)
             let tools = try await discoverAllTools()
@@ -575,8 +634,8 @@ public actor MCPServer {
                     name: hostSuppliedName ?? initializeResult.serverInfo.name)
             }
             discoveredTools = tools
-            catalogEpoch += 1
             state = .ready
+            emitCatalogSnapshot()
         } catch {
             guard generation == connectGeneration else {
                 logger.warning(
@@ -585,6 +644,7 @@ public actor MCPServer {
                 throw error
             }
             state = .faulted(String(describing: error))
+            emitCatalogSnapshot()
             throw error
         }
     }
@@ -642,6 +702,24 @@ public actor MCPServer {
         try mcpTools().map { $0 as any FoundationModels.Tool }
     }
 
+    /// Resolves `name` against the **current** catalog — i.e. ``discoveredTools``
+    /// as of this call, not whatever catalog snapshot a caller last observed
+    /// from ``catalogUpdates``.
+    ///
+    /// Unlike ``mcpTools()``, never throws ``MCPServerError/notReady(_:)``:
+    /// a tool absent from the current catalog — whether because ``state``
+    /// has never reached ``MCPServerState/ready`` or because a coalesced
+    /// `tools/list_changed` re-list (see ``coalesceAndRelist()``) removed it
+    /// — simply resolves to `nil`, for ``toolNoLongerAvailableResult(named:)``
+    /// to describe to a caller that cached an earlier reference.
+    ///
+    /// - Parameter name: The tool name to resolve.
+    /// - Returns: The matching ``MCPTool`` from ``discoveredTools``, or `nil`
+    ///   if no currently-discovered tool has that name.
+    public func tool(named name: String) -> MCPTool? {
+        discoveredTools.first { $0.name == name }
+    }
+
     /// The current catalog snapshot: this server's ``identity``,
     /// ``catalogEpoch``, ``state``, and every currently-discovered tool
     /// converted to a ``ToolDescriptor``.
@@ -663,13 +741,67 @@ public actor MCPServer {
             guard let identity else {
                 throw MCPServerError.notReady(state)
             }
-            return ToolCatalog(
-                identity: identity,
-                epoch: catalogEpoch,
-                state: state,
-                tools: discoveredTools.map(ToolDescriptor.init(mcpTool:))
-            )
+            return makeCatalogSnapshot(epoch: catalogEpoch, identity: identity)
         }
+    }
+
+    /// Builds a ``ToolCatalog`` snapshot from ``discoveredTools`` and
+    /// ``state`` as they stand right now — the shared construction behind
+    /// both ``catalog`` and ``emitCatalogSnapshot()``.
+    ///
+    /// - Parameters:
+    ///   - epoch: The snapshot's generation number.
+    ///   - identity: The server's established stable identity.
+    /// - Returns: The constructed snapshot.
+    private func makeCatalogSnapshot(epoch: Int, identity: ServerIdentity) -> ToolCatalog {
+        ToolCatalog(
+            identity: identity,
+            epoch: epoch,
+            state: state,
+            tools: discoveredTools.map(ToolDescriptor.init(mcpTool:))
+        )
+    }
+
+    /// Increments ``catalogEpoch`` and yields a new ``ToolCatalog`` snapshot
+    /// on ``catalogUpdates``, if ``identity`` has been established — a
+    /// no-op before the first successful connect, since there is nothing yet
+    /// to snapshot.
+    ///
+    /// The single emission point behind every ``catalogUpdates`` update: a
+    /// successful connect/reconnect and a failed reconnect (both in
+    /// ``applyConnect(transport:generation:)``), a mid-call transport fault
+    /// (``call(toolNamed:arguments:)``), and a coalesced `tools/list_changed`
+    /// re-list (``relistOnce()``) all funnel through this one method, so
+    /// ``catalogEpoch`` only ever advances alongside an actual emission.
+    private func emitCatalogSnapshot() {
+        guard let identity else { return }
+        catalogEpoch += 1
+        catalogContinuation.yield(makeCatalogSnapshot(epoch: catalogEpoch, identity: identity))
+    }
+
+    /// The rendered `isError` result text a caller should use once a
+    /// previously-resolved tool is no longer present in the current
+    /// catalog — e.g. removed by a coalesced `tools/list_changed` re-list
+    /// (``relistOnce()``) since the caller last resolved it via
+    /// ``tool(named:)``.
+    ///
+    /// - Parameter name: The name of the tool that is no longer available.
+    /// - Returns: Rendered `isError` content, via ``ToolContentRenderer``,
+    ///   describing `name` as no longer available.
+    public static func toolNoLongerAvailableResult(named name: String) -> String {
+        ToolContentRenderer.render(result: notAvailableResult(for: name))
+    }
+
+    /// The `CallTool.Result` behind ``toolNoLongerAvailableResult(named:)``.
+    ///
+    /// - Parameter name: The name of the tool that is no longer available.
+    /// - Returns: A `CallTool.Result` with `isError` set, describing `name`
+    ///   as no longer available.
+    private static func notAvailableResult(for name: String) -> CallTool.Result {
+        CallTool.Result(
+            content: [.text(text: "Tool \"\(name)\" is no longer available.", annotations: nil, _meta: nil)],
+            isError: true
+        )
     }
 
     /// Fetches every `tools/list` page, following `nextCursor` until the
@@ -692,6 +824,92 @@ public actor MCPServer {
             cursor = page.nextCursor
         } while cursor != nil
         return try allTools.map { try MCPTool(tool: $0, client: client) }
+    }
+
+    // MARK: - Live catalog: coalesced tools/list_changed re-list
+
+    /// Registers the handler that routes every inbound
+    /// `notifications/tools/list_changed` notification to
+    /// ``handleToolListChangedNotification()`` — called exactly once per
+    /// ``MCPServer`` (see ``hasRegisteredToolListChangedHandler``), never on
+    /// every reconnect.
+    private func registerToolListChangedHandler() async {
+        await client.onNotification(ToolListChangedNotification.self) { [weak self] _ in
+            guard let self else { return }
+            await self.handleToolListChangedNotification()
+        }
+    }
+
+    /// Called once per inbound `notifications/tools/list_changed`
+    /// notification: advances ``toolListChangedGeneration`` and, if no
+    /// ``coalesceAndRelist()`` watcher is already running, starts one.
+    ///
+    /// A burst of notifications arriving back to back only ever starts one
+    /// watcher — every additional notification in the burst just advances
+    /// ``toolListChangedGeneration``, which the already-running watcher
+    /// observes on its next poll — so an arbitrarily large burst still
+    /// produces exactly one re-list once it goes quiet.
+    private func handleToolListChangedNotification() {
+        toolListChangedGeneration += 1
+        guard !isCoalescingToolListChanged else { return }
+        isCoalescingToolListChanged = true
+        Task { await self.coalesceAndRelist() }
+    }
+
+    /// Waits out ``toolListChangedCoalesceWindow`` once, then re-runs
+    /// paginated `tools/list` discovery (``relistOnce()``) repeatedly until a
+    /// full discovery round trip completes with no further notification
+    /// arriving during it, then emits exactly one new ``catalogUpdates``
+    /// snapshot — the coalescing behavior
+    /// ``handleToolListChangedNotification()`` documents.
+    ///
+    /// The initial sleep catches a burst that arrives before this task even
+    /// starts running; the repeat-until-stable loop afterward catches
+    /// stragglers that arrive *during* a `tools/list` round trip — itself a
+    /// real cross-actor, cross-transport exchange (unlike a clock sleep,
+    /// never a zero-latency operation), so it naturally gives a concurrently
+    /// arriving notification genuine scheduling room to be observed by
+    /// ``handleToolListChangedNotification()`` before this loop re-checks
+    /// ``toolListChangedGeneration``. Together, the two catch a burst
+    /// regardless of whether it arrives all at once up front or trickles in
+    /// while a re-list is already underway.
+    private func coalesceAndRelist() async {
+        try? await clock.sleep(for: Self.toolListChangedCoalesceWindow)
+        var observedGeneration: Int
+        var lastRelistSucceeded = false
+        repeat {
+            observedGeneration = toolListChangedGeneration
+            lastRelistSucceeded = await relistOnce()
+        } while observedGeneration != toolListChangedGeneration
+        isCoalescingToolListChanged = false
+        if lastRelistSucceeded {
+            emitCatalogSnapshot()
+        }
+    }
+
+    /// Re-runs paginated `tools/list` discovery once and, on success,
+    /// replaces ``discoveredTools`` — the single discovery round trip
+    /// ``coalesceAndRelist()`` repeats until stable, emitting at most one
+    /// ``catalogUpdates`` snapshot itself once the whole burst has settled.
+    ///
+    /// A discovery failure is logged and otherwise swallowed, leaving
+    /// ``discoveredTools`` and ``catalogEpoch`` exactly as they were: unlike
+    /// a failed ``connect(transport:)``, a transient `tools/list` failure
+    /// mid-burst does not itself change ``state`` or fault the connection.
+    ///
+    /// - Returns: `true` if discovery succeeded and ``discoveredTools`` was
+    ///   replaced; `false` if it failed and ``discoveredTools`` was left
+    ///   unchanged.
+    private func relistOnce() async -> Bool {
+        do {
+            discoveredTools = try await discoverAllTools()
+            return true
+        } catch {
+            logger.warning(
+                "MCPServer failed to re-list tools after tools/list_changed",
+                metadata: [Self.serverMetadataKey: "\(identityNameForDiagnostics)", Self.errorMetadataKey: "\(error)"])
+            return false
+        }
     }
 
     // MARK: - Elicitation
