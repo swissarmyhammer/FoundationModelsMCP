@@ -25,6 +25,9 @@ public protocol MCPToolCalling: Sendable {
     func callTool(name: String, arguments: [String: Value]?) async throws -> CallTool.Result
 }
 
+/// Conforms `MCP.Client` to ``MCPToolCalling`` so the real swift-sdk client
+/// satisfies the narrow seam this library depends on, with no wrapper type
+/// in between.
 extension Client: MCPToolCalling {
     /// Conforms `MCP.Client` to ``MCPToolCalling``.
     ///

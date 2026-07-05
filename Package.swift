@@ -101,6 +101,7 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.12.1"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.14.0"),
+        .package(url: "https://github.com/swiftlang/swift-docc-plugin", from: "1.5.0"),
     ],
     targets: [
         .target(
@@ -108,6 +109,20 @@ let package = Package(
             dependencies: [
                 mcpProduct,
                 .product(name: "Logging", package: "swift-log"),
+            ],
+            // Declares the FoundationModelsMCP.docc DocC catalog as a copied
+            // resource so a plain `swift build` doesn't warn about it as an
+            // unhandled file. Deliberately `.copy`, never `exclude`: excluding
+            // the catalog removes it from SwiftPM's view of the target's
+            // source tree entirely, which also hides it from
+            // swift-docc-plugin's `generate-documentation` — confirmed by
+            // running the command both ways: `exclude` builds warning-free
+            // but silently drops every article (GettingStarted.md,
+            // EnforcementModel.md, CatalogConsumerContract.md) from the
+            // generated archive, while `.copy` keeps both properties (no
+            // warning, articles present).
+            resources: [
+                .copy("FoundationModelsMCP.docc")
             ],
             linkerSettings: foundationModelsLinkerSettings
         ),

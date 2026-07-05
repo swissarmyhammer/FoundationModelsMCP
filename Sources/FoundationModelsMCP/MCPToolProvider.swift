@@ -6,7 +6,7 @@ import Logging
 /// tools, discovered once connected) answer the same way.
 ///
 /// Conforming types are combined via ``resolveSessionTools(from:logger:)``,
-/// the function backing the ``LanguageModelSession/init(model:mcp:instructions:)``
+/// the function backing the `LanguageModelSession.init(model:mcp:instructions:)`
 /// convenience initializer — see `plan.md`'s "Uniform entry point" section for
 /// the full rationale.
 public protocol MCPToolProvider {
@@ -219,6 +219,10 @@ private func disambiguatedTool(
     return mcpTool.renamed(to: disambiguatedName)
 }
 
+/// Adds the `LanguageModelSession(mcp:)` convenience initializer described in
+/// `plan.md`'s "Uniform entry point" section — the one call site that adds
+/// one or more ``MCPToolProvider``s (servers and/or loose tools) to a
+/// session.
 extension LanguageModelSession {
     /// Creates a session whose tools are resolved from `providers` via
     /// ``resolveSessionTools(from:logger:)`` — a thin convenience over

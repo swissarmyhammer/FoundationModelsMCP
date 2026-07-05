@@ -16,7 +16,7 @@ public enum ToolContentRenderer {
 
     /// The default render budget, in characters: the maximum length of any
     /// single rendered text unit — a `.text`/`.resource` content item's text,
-    /// or `structuredContent`'s JSON — before ``trimmed(text:budget:)`` elides
+    /// or `structuredContent`'s JSON — before `trimmed(text:budget:)` elides
     /// its middle.
     ///
     /// Tool results are the context-window cost, not the model's own output,
@@ -33,14 +33,14 @@ public enum ToolContentRenderer {
     ///
     /// Output shape: each `content` item is rendered (see the per-case rules
     /// below) and the results are joined with newlines; a `structuredContent`
-    /// section (see ``renderStructuredContent(_:outputSchema:budget:)``) is
+    /// section (see `renderStructuredContent(_:outputSchema:budget:)`) is
     /// appended after a blank line, if present. If `isError == true`, an
     /// `"Error:"` paragraph is prepended — the failure is marked, never
     /// hidden, and the content/structuredContent that accompanies it is
     /// still rendered in full.
     ///
     /// Per-content-case rendering:
-    /// - `.text`: the text, trimmed to `budget` — see ``trimmed(text:budget:)``.
+    /// - `.text`: the text, trimmed to `budget` — see `trimmed(text:budget:)`.
     /// - `.image` / `.audio`: a `"[image: <mimeType>]"` / `"[audio:
     ///   <mimeType>]"` placeholder — the base64 payload is never rendered,
     ///   regardless of `budget`.
@@ -65,11 +65,11 @@ public enum ToolContentRenderer {
     ///   - result: The `tools/call` result to render.
     ///   - outputSchema: The tool's declared `outputSchema` (`Tool.outputSchema`),
     ///     used to validate `result.structuredContent` against the pinned
-    ///     subset in ``renderStructuredContent(_:outputSchema:budget:)``.
+    ///     subset in `renderStructuredContent(_:outputSchema:budget:)`.
     ///     `nil` skips validation entirely.
     ///   - budget: The maximum character count for any single rendered text
     ///     unit before it is trimmed; see ``defaultRenderBudget`` for the
-    ///     default and ``trimmed(text:budget:)`` for the trimming rule.
+    ///     default and `trimmed(text:budget:)` for the trimming rule.
     /// - Returns: The rendered text.
     public static func render(
         result: CallTool.Result, outputSchema: Value? = nil, budget: Int = defaultRenderBudget
@@ -103,7 +103,7 @@ public enum ToolContentRenderer {
     /// - Parameters:
     ///   - content: The content item to render.
     ///   - budget: The maximum character count before text-bearing cases are
-    ///     trimmed; see ``trimmed(text:budget:)``.
+    ///     trimmed; see `trimmed(text:budget:)`.
     /// - Returns: The rendered text for `content`.
     private static func render(content: Tool.Content, budget: Int) -> String {
         switch content {
@@ -129,7 +129,7 @@ public enum ToolContentRenderer {
     /// - Parameters:
     ///   - resource: The embedded resource to render.
     ///   - budget: The maximum character count before the resource's `text`
-    ///     is trimmed; see ``trimmed(text:budget:)``.
+    ///     is trimmed; see `trimmed(text:budget:)`.
     /// - Returns: The rendered text for `resource`.
     private static func renderResource(resource: Resource.Content, budget: Int) -> String {
         if let text = resource.text {
@@ -204,7 +204,7 @@ public enum ToolContentRenderer {
         return head + marker + tail
     }
 
-    /// The elision marker naming `elidedCount`, used by ``trimmed(text:budget:)``.
+    /// The elision marker naming `elidedCount`, used by `trimmed(text:budget:)`.
     ///
     /// - Parameter elidedCount: The number of characters the marker reports
     ///   as removed.
@@ -232,7 +232,7 @@ public enum ToolContentRenderer {
     ///   - outputSchema: The tool's declared `outputSchema`, or `nil` to skip
     ///     validation.
     ///   - budget: The maximum character count before the rendered JSON is
-    ///     trimmed; see ``trimmed(text:budget:)``.
+    ///     trimmed; see `trimmed(text:budget:)`.
     /// - Returns: The rendered `"Structured result:"` section.
     private static func renderStructuredContent(_ value: Value, outputSchema: Value?, budget: Int) -> String {
         var lines = ["Structured result:", trimmed(text: jsonString(for: value), budget: budget)]

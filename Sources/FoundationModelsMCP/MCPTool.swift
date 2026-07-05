@@ -36,18 +36,18 @@ public struct MCPTool: FoundationModels.Tool {
     /// the full rationale.
     private let client: any MCPToolCalling
 
-    /// A disambiguated name assigned by ``resolveSessionTools(from:)`` to
+    /// A disambiguated name assigned by ``resolveSessionTools(from:logger:)`` to
     /// resolve a cross-provider tool-name collision, taking precedence over
     /// the source `MCP.Tool`'s own name when present.
     ///
     /// `nil` for every tool built through ``init(tool:client:)`` directly;
-    /// only ``renamed(to:)`` ever sets it, so a tool's name only ever
+    /// only `renamed(to:)` ever sets it, so a tool's name only ever
     /// diverges from `tool.name` as an explicit, traceable disambiguation
     /// step.
     private var nameOverride: String?
 
-    /// The tool's name: ``nameOverride`` if a cross-provider collision was
-    /// disambiguated (see ``renamed(to:)``), otherwise sourced verbatim from
+    /// The tool's name: `nameOverride` if a cross-provider collision was
+    /// disambiguated (see `renamed(to:)`), otherwise sourced verbatim from
     /// the source `MCP.Tool`.
     public var name: String { nameOverride ?? tool.name }
 
@@ -107,9 +107,9 @@ public struct MCPTool: FoundationModels.Tool {
     /// Returns a copy of this tool with ``name`` overridden to `newName`,
     /// leaving every other property — description, parameters, and calling
     /// behavior (`call(arguments:)` still forwards to the source `MCP.Tool`'s
-    /// own `tool.name` against ``client``) — unchanged.
+    /// own `tool.name` against `client`) — unchanged.
     ///
-    /// Used exclusively by ``resolveSessionTools(from:)`` to disambiguate a
+    /// Used exclusively by ``resolveSessionTools(from:logger:)`` to disambiguate a
     /// cross-provider tool-name collision; the model-facing ``name`` changes,
     /// but the tool it calls on the server does not.
     ///

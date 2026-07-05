@@ -40,7 +40,7 @@ public enum MCPServerState: Sendable, Equatable {
 /// connection at a differently-configured or upgraded server instance), but
 /// callers that key state by server identity — routing tables, tool caches,
 /// UI labels — need that key to stay put across a reconnect. See
-/// ``MCPServer/init(client:name:)`` for how the name is chosen.
+/// ``MCPServer/init(client:name:elicitationCoordinator:clock:defaultCallTimeout:logger:)`` for how the name is chosen.
 public struct ServerIdentity: Sendable, Hashable {
     /// The stable name identifying this server connection.
     public let name: String
@@ -48,7 +48,7 @@ public struct ServerIdentity: Sendable, Hashable {
 
 /// Configuration for ``MCPServer``'s connect-retry and auto-reconnect
 /// backoff — see ``MCPServer/connect(transport:backoffPolicy:)`` and
-/// ``MCPServer/call(toolNamed:arguments:)``.
+/// ``MCPServer/call(toolNamed:arguments:timeout:)``.
 ///
 /// Per `plan.md`'s Lifecycle policy: a failed/timed-out connect attempt is
 /// retried with exponential backoff — ``baseDelay`` after the first
@@ -137,7 +137,7 @@ public enum MCPServerError: Error, Sendable, Equatable {
 /// ``MCPServer/progressUpdates``, enriched with the name of the tool the
 /// progress belongs to.
 ///
-/// The wire notification itself only carries the opaque ``ProgressToken``
+/// The wire notification itself only carries the opaque `ProgressToken`
 /// ``MCPServer/call(toolNamed:arguments:timeout:)`` generated for the call —
 /// this type pairs that update with the tool name the host actually cares
 /// about, since ``MCPServer`` alone knows which call a token belongs to.
@@ -159,13 +159,13 @@ public struct CallProgress: Sendable, Equatable {
 
 /// Bookkeeping ``MCPServer`` tracks for one in-flight
 /// ``MCPServer/call(toolNamed:arguments:timeout:)``, keyed by its generated
-/// ``ProgressToken`` in ``MCPServer/activeCalls``.
+/// `ProgressToken` in ``MCPServer/activeCalls``.
 ///
 /// - SeeAlso: ``CallDeadline`` for the resettable-timeout arithmetic
 ///   ``deadline`` wraps.
 private struct ActiveCall {
     /// The name of the tool this call invoked — the wire
-    /// `notifications/progress` only carries the opaque ``ProgressToken``,
+    /// `notifications/progress` only carries the opaque `ProgressToken`,
     /// not the tool name ``CallProgress`` reports to the host.
     let toolName: String
 
@@ -243,7 +243,7 @@ public actor MCPServer {
     /// Stored in `tools/list` page order.
     private var discoveredTools: [MCPTool] = []
 
-    /// Incremented by every ``emitCatalogSnapshot()`` call — the per-server
+    /// Incremented by every `emitCatalogSnapshot()` call — the per-server
     /// generation number ``catalog``'s snapshot exposes as
     /// ``ToolCatalog/epoch``. Starts at `0` (before any successful connect)
     /// and is never reset for the life of this actor.
@@ -251,10 +251,10 @@ public actor MCPServer {
 
     /// The stream of versioned ``ToolCatalog`` snapshots this server emits.
     ///
-    /// See ``emitCatalogSnapshot()`` for every point that yields to it: a
+    /// See `emitCatalogSnapshot()` for every point that yields to it: a
     /// successful connect/reconnect, a failed reconnect, a mid-call
     /// transport fault, and a coalesced `tools/list_changed` re-list (see
-    /// ``coalesceAndRelist()``).
+    /// `coalesceAndRelist()`).
     ///
     /// Every emission is a complete, self-contained snapshot a consumer can
     /// start from with no prior state — never a delta — per `plan.md`'s
@@ -269,7 +269,7 @@ public actor MCPServer {
     ///   every snapshot.
     public let catalogUpdates: AsyncStream<ToolCatalog>
 
-    /// The continuation ``emitCatalogSnapshot()`` yields new snapshots to —
+    /// The continuation `emitCatalogSnapshot()` yields new snapshots to —
     /// paired with ``catalogUpdates`` once, at construction time.
     private let catalogContinuation: AsyncStream<ToolCatalog>.Continuation
 
@@ -281,7 +281,7 @@ public actor MCPServer {
     ///   only one concurrent consumer should iterate this stream at a time.
     public let progressUpdates: AsyncStream<CallProgress>
 
-    /// The continuation ``handleProgressNotification(_:)`` yields new
+    /// The continuation `handleProgressNotification(_:)` yields new
     /// updates to — paired with ``progressUpdates`` once, at construction
     /// time.
     private let progressContinuation: AsyncStream<CallProgress>.Continuation
@@ -292,8 +292,8 @@ public actor MCPServer {
     private let defaultCallTimeout: Duration
 
     /// Bookkeeping for every ``call(toolNamed:arguments:timeout:)`` current
-    /// in flight, keyed by the ``ProgressToken`` that call generated —
-    /// looked up by ``handleProgressNotification(_:)`` to reset the right
+    /// in flight, keyed by the `ProgressToken` that call generated —
+    /// looked up by `handleProgressNotification(_:)` to reset the right
     /// call's timeout deadline and to attribute a ``CallProgress`` update to
     /// its tool name.
     private var activeCalls: [ProgressToken: ActiveCall] = [:]
@@ -312,33 +312,33 @@ public actor MCPServer {
     /// on every attempt).
     private var hasRegisteredToolListChangedHandler = false
 
-    /// The generation ``coalesceAndRelist()`` polls to detect whether
+    /// The generation `coalesceAndRelist()` polls to detect whether
     /// another `tools/list_changed` notification arrived during its most
     /// recent coalescing window — advanced by every call to
     /// ``handleToolListChangedNotification()``, never reset.
     private var toolListChangedGeneration = 0
 
-    /// Whether a ``coalesceAndRelist()`` task is already watching the
+    /// Whether a `coalesceAndRelist()` task is already watching the
     /// current burst for quiet — guards
     /// ``handleToolListChangedNotification()`` against starting a second,
     /// redundant watcher while one is already running.
     private var isCoalescingToolListChanged = false
 
     /// The task ``handleToolListChangedNotification()`` starts to run
-    /// ``coalesceAndRelist()``, or `nil` when no coalescing watcher is
+    /// `coalesceAndRelist()`, or `nil` when no coalescing watcher is
     /// currently running.
     ///
     /// Stored rather than left as a bare, unstored `Task { }` so this actor
     /// holds a structured handle to its own background work instead of
     /// leaking an unstructured task — cleared back to `nil` by
-    /// ``coalesceAndRelist()`` itself once it finishes. Nothing currently
+    /// `coalesceAndRelist()` itself once it finishes. Nothing currently
     /// needs to cancel it early, since ``isCoalescingToolListChanged``
     /// already guards against starting a second one while it runs.
     private var coalescingTask: Task<Void, Never>?
 
     /// How long a burst of `tools/list_changed` notifications must go quiet
-    /// before ``coalesceAndRelist()`` performs the actual re-list — measured
-    /// on ``clock``, so a virtual clock in tests exercises the full
+    /// before `coalesceAndRelist()` performs the actual re-list — measured
+    /// on `clock`, so a virtual clock in tests exercises the full
     /// coalescing window with no real delay.
     private static let toolListChangedCoalesceWindow: Duration = .milliseconds(50)
 
@@ -354,7 +354,7 @@ public actor MCPServer {
 
     /// The transport passed to the most recent ``connect(transport:)``
     /// call (successful or not), retained so a later mid-call transport
-    /// fault (see ``call(toolNamed:arguments:)``) can auto-reconnect
+    /// fault (see ``call(toolNamed:arguments:timeout:)``) can auto-reconnect
     /// without the caller supplying a transport again.
     ///
     /// - Important: Auto-reconnect re-invokes `connect()` on this **very
@@ -371,16 +371,16 @@ public actor MCPServer {
 
     /// Incremented at the start of every attempt ``applyConnect(transport:generation:)``
     /// makes (whether from ``connect(transport:)`` directly or from
-    /// ``performConnectAttempt(transport:timeout:)``'s backoff retry loop),
+    /// `performConnectAttempt(transport:timeout:)`'s backoff retry loop),
     /// and captured by that attempt as the generation it must still match
-    /// before mutating ``state``/``identity``/``discoveredTools`` — see
-    /// ``performConnectAttempt(transport:timeout:)`` for why an abandoned,
+    /// before mutating ``state``/``identity``/`discoveredTools` — see
+    /// `performConnectAttempt(transport:timeout:)` for why an abandoned,
     /// still-running attempt can otherwise resolve long after the retry
     /// loop has moved on.
     private var connectGeneration = 0
 
     /// The backoff policy ``connect(transport:backoffPolicy:)`` was last
-    /// called with, reused by ``call(toolNamed:arguments:)`` when
+    /// called with, reused by ``call(toolNamed:arguments:timeout:)`` when
     /// auto-reconnecting after a mid-call fault — "auto-reconnect with the
     /// same policy" per `plan.md`'s Lifecycle policy. A server that never
     /// calls the backoff-retrying ``connect(transport:backoffPolicy:)``
@@ -404,7 +404,7 @@ public actor MCPServer {
     ///     default) means this connection never declares the elicitation
     ///     client capability and never registers a handler for it.
     ///   - clock: The clock ``connect(transport:backoffPolicy:)`` sleeps on
-    ///     between retries, and ``coalesceAndRelist()`` sleeps on for its
+    ///     between retries, and `coalesceAndRelist()` sleeps on for its
     ///     coalescing window. Defaults to a real `ContinuousClock`; tests
     ///     substitute a virtual clock to exercise a full backoff schedule or
     ///     coalescing window without any real delay.
@@ -412,9 +412,9 @@ public actor MCPServer {
     ///     Never used by ``call(toolNamed:arguments:timeout:)``'s own
     ///     timeout-enforcement loop, which always measures real wall-clock
     ///     time (`Task.sleep(for:)`) instead — the same reason
-    ///     ``performConnectAttempt(transport:timeout:)``'s per-attempt
+    ///     `performConnectAttempt(transport:timeout:)`'s per-attempt
     ///     timeout does: a virtual clock that never actually suspends (like
-    ///     ``ManualClock`` in this package's own tests) would make the
+    ///     `ManualClock` in this package's own tests) would make the
     ///     timeout side of that race always "win" instantly against a call
     ///     that's actually in flight, for every test that happens to inject
     ///     one for an unrelated reason (e.g. exercising backoff). See
@@ -461,7 +461,7 @@ public actor MCPServer {
     /// previous ``MCPServerState/faulted(_:)`` or after an explicit
     /// ``disconnect()`` — and advances it to ``MCPServerState/ready`` only
     /// once both the handshake and full discovery succeed. ``identity`` is
-    /// established (see ``init(client:name:)``) only once this call fully
+    /// established (see ``init(client:name:elicitationCoordinator:clock:defaultCallTimeout:logger:)``) only once this call fully
     /// succeeds, on the first such call, and is never recomputed by any
     /// later call. On any failure — whether the handshake itself or
     /// discovery afterward — ``state`` becomes ``MCPServerState/faulted(_:)``,
@@ -501,12 +501,12 @@ public actor MCPServer {
     ///
     /// Attempts ``connect(transport:)`` up to `backoffPolicy.maxAttempts`
     /// times, each bounded by `backoffPolicy.connectTimeout`, sleeping on
-    /// ``clock`` for an exponentially increasing delay (see
+    /// `clock` for an exponentially increasing delay (see
     /// ``BackoffPolicy``) between failed attempts. Hard-fails only once
     /// every attempt is exhausted.
     ///
-    /// Records `backoffPolicy` as ``activeBackoffPolicy`` up front, so a
-    /// later mid-call transport fault (see ``call(toolNamed:arguments:)``)
+    /// Records `backoffPolicy` as `activeBackoffPolicy` up front, so a
+    /// later mid-call transport fault (see ``call(toolNamed:arguments:timeout:)``)
     /// auto-reconnects using this same policy — "auto-reconnect with the
     /// same policy" per `plan.md`'s Lifecycle policy. Every retry, and the
     /// final exhaustion if it happens, is logged.
@@ -514,7 +514,7 @@ public actor MCPServer {
     /// - Parameters:
     ///   - transport: The transport to connect over, constructed and owned
     ///     by the caller; forwarded to ``connect(transport:)`` on every
-    ///     attempt, which retains it as ``lastTransport``.
+    ///     attempt, which retains it as `lastTransport`.
     ///   - backoffPolicy: The retry policy governing the per-attempt
     ///     timeout, delay schedule, and maximum attempts.
     /// - Throws: ``MCPServerError/backoffExhausted(serverName:attempts:lastError:)``
@@ -551,12 +551,12 @@ public actor MCPServer {
         }
 
         // The final attempt may still be running in the background (it lost
-        // the ``performConnectAttempt(transport:timeout:)`` race against its
+        // the `performConnectAttempt(transport:timeout:)` race against its
         // own `connectTimeout` rather than having actually finished) — bump
         // ``connectGeneration`` here too, not just on a *newer* connect call,
         // so that attempt's eventual, arbitrarily-late resolution is discarded
         // by ``applyConnect(transport:generation:)`` instead of mutating
-        // ``state``/``identity``/``discoveredTools`` after the caller has
+        // ``state``/``identity``/`discoveredTools` after the caller has
         // already received and acted on ``MCPServerError/backoffExhausted(serverName:attempts:lastError:)``.
         connectGeneration += 1
 
@@ -573,11 +573,11 @@ public actor MCPServer {
 
     /// Calls a tool and renders the result for the model.
     ///
-    /// Attaches a fresh ``ProgressToken`` to the call's `_meta` so incoming
+    /// Attaches a fresh `ProgressToken` to the call's `_meta` so incoming
     /// `notifications/progress` for it can be routed to ``progressUpdates``
-    /// and reset its timeout (see ``handleProgressNotification(_:)``), races
+    /// and reset its timeout (see `handleProgressNotification(_:)`), races
     /// the call's own response against a resettable `timeout` (defaulting to
-    /// ``defaultCallTimeout``), and cooperates with Swift `Task`
+    /// `defaultCallTimeout`), and cooperates with Swift `Task`
     /// cancellation: cancelling the `Task` this call runs in sends a
     /// protocol-level `notifications/cancelled` for it, via
     /// `MCP.Client.cancelRequest(_:reason:)` — the swift-sdk does not do
@@ -587,7 +587,7 @@ public actor MCPServer {
     ///
     /// Maps a mid-call transport fault to an `isError`-style rendered result
     /// (via ``ToolContentRenderer``) instead of throwing or hanging, and
-    /// auto-reconnects with ``activeBackoffPolicy`` as a side effect — so the
+    /// auto-reconnects with `activeBackoffPolicy` as a side effect — so the
     /// model can react to *this* call's failure while the connection heals
     /// for the next one. A timeout or a cancelled `Task` also render their
     /// own `isError`-style result but, unlike a transport fault, never touch
@@ -603,7 +603,7 @@ public actor MCPServer {
     ///   - arguments: Arguments to use for the tool call.
     ///   - timeout: The maximum time this call may run before it is treated
     ///     as timed out, reset by every `notifications/progress` received
-    ///     for it. Defaults to ``defaultCallTimeout``.
+    ///     for it. Defaults to `defaultCallTimeout`.
     /// - Returns: The rendered `tools/call` result on success, or a rendered
     ///   `isError` result describing a transport fault, a timeout, or a
     ///   Swift `Task` cancellation.
@@ -669,10 +669,10 @@ public actor MCPServer {
     /// ``MCPServerError/callTimedOut(toolName:)`` if the timeout wins.
     ///
     /// The timeout side loops sleeping in real-wall-clock full-`timeout`
-    /// increments (`Task.sleep(for:)` — deliberately never ``clock``; see
-    /// ``clock``'s own doc comment for why), comparing ``ActiveCall/deadline``'s
+    /// increments (`Task.sleep(for:)` — deliberately never `clock`; see
+    /// `clock`'s own doc comment for why), comparing ``ActiveCall/deadline``'s
     /// ``CallDeadline/resetCount`` before and after each sleep to detect
-    /// whether ``handleProgressNotification(_:)`` reset the deadline while
+    /// whether `handleProgressNotification(_:)` reset the deadline while
     /// it slept — see ``CallDeadline`` for why that comparison, not a
     /// literal clock-instant deadline, is what makes this loop's logic
     /// unit-testable in isolation. If the timeout wins, explicitly cancels
@@ -719,7 +719,7 @@ public actor MCPServer {
     }
 
     /// Sleeps in real-wall-clock `timeout` increments until a full interval
-    /// elapses with no ``handleProgressNotification(_:)`` reset, returning
+    /// elapses with no `handleProgressNotification(_:)` reset, returning
     /// ``CallOutcome/timedOut`` once that happens.
     ///
     /// Pulled out of ``resultOrTimeout(toolName:context:progressToken:timeout:)``'s
@@ -767,8 +767,8 @@ public actor MCPServer {
 
     /// Restores the server state to ready after a mid-call transport fault.
     ///
-    /// Uses ``lastTransport`` and ``activeBackoffPolicy`` — the
-    /// "auto-reconnect" half of ``call(toolNamed:arguments:)``.
+    /// Uses `lastTransport` and `activeBackoffPolicy` — the
+    /// "auto-reconnect" half of ``call(toolNamed:arguments:timeout:)``.
     ///
     /// Never throws: both the "no prior transport" case and a
     /// backoff-exhausted reconnect are logged and swallowed, leaving
@@ -851,7 +851,7 @@ public actor MCPServer {
     /// Attempts a single connection bounded by the specified real
     /// wall-clock timeout.
     ///
-    /// Measured against real wall-clock time — never ``clock`` (see
+    /// Measured against real wall-clock time — never `clock` (see
     /// ``BackoffPolicy/connectTimeout``'s doc for why a per-attempt timeout
     /// is a real-time bound regardless of which clock paces the backoff
     /// delay between attempts).
@@ -874,7 +874,7 @@ public actor MCPServer {
     /// A late-arriving, abandoned attempt that eventually *does* finish
     /// still runs through ``applyConnect(transport:generation:)``, whose
     /// own generation check discards the result rather than clobbering
-    /// ``state``/``identity``/``discoveredTools`` set by a newer attempt
+    /// ``state``/``identity``/`discoveredTools` set by a newer attempt
     /// (or by ``connect(transport:backoffPolicy:)`` having already given
     /// up and thrown ``MCPServerError/backoffExhausted(serverName:attempts:lastError:)``).
     ///
@@ -913,12 +913,12 @@ public actor MCPServer {
     /// single-attempt connections.
     ///
     /// The shared body behind both ``connect(transport:)`` and
-    /// ``performConnectAttempt(transport:timeout:)``, mutating
-    /// ``state``/``identity``/``discoveredTools`` only if `generation`
+    /// `performConnectAttempt(transport:timeout:)`, mutating
+    /// ``state``/``identity``/`discoveredTools` only if `generation`
     /// still matches ``connectGeneration`` by the time this call would
     /// apply its result.
     ///
-    /// That guard matters only for a ``performConnectAttempt(transport:timeout:)``
+    /// That guard matters only for a `performConnectAttempt(transport:timeout:)`
     /// caller: a fresh, non-racing ``connect(transport:)`` call always
     /// passes its own just-incremented generation, so the guard is always
     /// satisfied there. For an *abandoned* attempt that lost the race
@@ -935,7 +935,7 @@ public actor MCPServer {
     ///   `MCP.Client.listTools(cursor:)` throws, or whatever
     ///   `MCPTool.init(tool:client:)` throws for a malformed `inputSchema`
     ///   encountered during discovery — even when `generation` turns out to
-    ///   be stale, so ``performConnectAttempt(transport:timeout:)``'s
+    ///   be stale, so `performConnectAttempt(transport:timeout:)`'s
     ///   detached `Task` still observes failure vs. success correctly.
     private func applyConnect(transport: any Transport, generation: Int) async throws {
         guard generation == connectGeneration else {
@@ -1060,18 +1060,18 @@ public actor MCPServer {
     /// not found.
     ///
     /// Resolves `name` against the **current** catalog — i.e.
-    /// ``discoveredTools`` as of this call, not whatever catalog snapshot a
+    /// `discoveredTools` as of this call, not whatever catalog snapshot a
     /// caller last observed from ``catalogUpdates``.
     ///
     /// Unlike ``mcpTools()``, never throws ``MCPServerError/notReady(_:)``:
     /// a tool absent from the current catalog — whether because ``state``
     /// has never reached ``MCPServerState/ready`` or because a coalesced
-    /// `tools/list_changed` re-list (see ``coalesceAndRelist()``) removed it
+    /// `tools/list_changed` re-list (see `coalesceAndRelist()`) removed it
     /// — simply resolves to `nil`, for ``toolNoLongerAvailableResult(named:)``
     /// to describe to a caller that cached an earlier reference.
     ///
     /// - Parameter name: The tool name to resolve.
-    /// - Returns: The matching ``MCPTool`` from ``discoveredTools``, or `nil`
+    /// - Returns: The matching ``MCPTool`` from `discoveredTools`, or `nil`
     ///   if no currently-discovered tool has that name.
     public func tool(named name: String) -> MCPTool? {
         discoveredTools.first { $0.name == name }
@@ -1080,7 +1080,7 @@ public actor MCPServer {
     /// The current catalog snapshot with this server's identity, epoch,
     /// state, and all discovered tools.
     ///
-    /// Combines ``identity``, ``catalogEpoch``, ``state``, and every
+    /// Combines ``identity``, `catalogEpoch`, ``state``, and every
     /// currently-discovered tool converted to a ``ToolDescriptor``.
     ///
     /// Unlike ``mcpTools()``, whose ``MCPServerError/notReady(_:)`` guard is
@@ -1089,7 +1089,7 @@ public actor MCPServer {
     /// established — so a snapshot taken while ``state`` is
     /// ``MCPServerState/faulted(_:)`` after a prior successful connect still
     /// succeeds, reporting the last-known tools alongside the current
-    /// (faulted) state, exactly as ``plan.md``'s Dynamic discovery decision
+    /// (faulted) state, exactly as `plan.md`'s Dynamic discovery decision
     /// calls for.
     ///
     /// - Throws: ``MCPServerError/notReady(_:)`` if ``identity`` has never
@@ -1104,9 +1104,9 @@ public actor MCPServer {
         }
     }
 
-    /// Builds a ``ToolCatalog`` snapshot from ``discoveredTools`` and
+    /// Builds a ``ToolCatalog`` snapshot from `discoveredTools` and
     /// ``state`` as they stand right now — the shared construction behind
-    /// both ``catalog`` and ``emitCatalogSnapshot()``.
+    /// both ``catalog`` and `emitCatalogSnapshot()`.
     ///
     /// - Parameters:
     ///   - epoch: The snapshot's generation number.
@@ -1125,16 +1125,16 @@ public actor MCPServer {
     /// server identity is established.
     ///
     /// Yields a new ``ToolCatalog`` snapshot on ``catalogUpdates`` with the
-    /// incremented ``catalogEpoch``, if ``identity`` has been established —
+    /// incremented `catalogEpoch`, if ``identity`` has been established —
     /// a no-op before the first successful connect, since there is nothing
     /// yet to snapshot.
     ///
     /// The single emission point behind every ``catalogUpdates`` update: a
     /// successful connect/reconnect and a failed reconnect (both in
     /// ``applyConnect(transport:generation:)``), a mid-call transport fault
-    /// (``call(toolNamed:arguments:)``), and a coalesced `tools/list_changed`
-    /// re-list (``relistOnce()``) all funnel through this one method, so
-    /// ``catalogEpoch`` only ever advances alongside an actual emission.
+    /// (``call(toolNamed:arguments:timeout:)``), and a coalesced `tools/list_changed`
+    /// re-list (`relistOnce()`) all funnel through this one method, so
+    /// `catalogEpoch` only ever advances alongside an actual emission.
     private func emitCatalogSnapshot() {
         guard let identity else { return }
         catalogEpoch += 1
@@ -1146,7 +1146,7 @@ public actor MCPServer {
     ///
     /// A caller should use this once a previously-resolved tool is no
     /// longer present in the current catalog — e.g. removed by a coalesced
-    /// `tools/list_changed` re-list (``relistOnce()``) since the caller
+    /// `tools/list_changed` re-list (`relistOnce()`) since the caller
     /// last resolved it via ``tool(named:)``.
     ///
     /// - Parameter name: The name of the tool that is no longer available.
@@ -1192,7 +1192,7 @@ public actor MCPServer {
     /// Registers the notification handler for `notifications/progress`.
     ///
     /// Routes every inbound progress notification to
-    /// ``handleProgressNotification(_:)`` — called exactly once per
+    /// `handleProgressNotification(_:)` — called exactly once per
     /// ``MCPServer`` (see ``hasRegisteredProgressHandler``), never on every
     /// reconnect, mirroring ``registerToolListChangedHandler()``.
     private func registerProgressHandler() async {
@@ -1240,7 +1240,7 @@ public actor MCPServer {
 
     /// Called once per inbound `notifications/tools/list_changed`
     /// notification: advances ``toolListChangedGeneration`` and, if no
-    /// ``coalesceAndRelist()`` watcher is already running, starts one.
+    /// `coalesceAndRelist()` watcher is already running, starts one.
     ///
     /// A burst of notifications arriving back to back only ever starts one
     /// watcher — every additional notification in the burst just advances
@@ -1258,7 +1258,7 @@ public actor MCPServer {
     /// re-list.
     ///
     /// Waits out ``toolListChangedCoalesceWindow`` once, then re-runs
-    /// paginated `tools/list` discovery (``relistOnce()``) repeatedly until a
+    /// paginated `tools/list` discovery (`relistOnce()`) repeatedly until a
     /// full discovery round trip completes with no further notification
     /// arriving during it, then emits exactly one new ``catalogUpdates``
     /// snapshot — the coalescing behavior
@@ -1292,18 +1292,18 @@ public actor MCPServer {
     /// Re-runs tool discovery once and updates the discovered tools if
     /// successful.
     ///
-    /// On success, replaces ``discoveredTools`` — the single discovery round
-    /// trip ``coalesceAndRelist()`` repeats until stable, emitting at most
+    /// On success, replaces `discoveredTools` — the single discovery round
+    /// trip `coalesceAndRelist()` repeats until stable, emitting at most
     /// one ``catalogUpdates`` snapshot itself once the whole burst has
     /// settled.
     ///
     /// A discovery failure is logged and otherwise swallowed, leaving
-    /// ``discoveredTools`` and ``catalogEpoch`` exactly as they were: unlike
+    /// `discoveredTools` and `catalogEpoch` exactly as they were: unlike
     /// a failed ``connect(transport:)``, a transient `tools/list` failure
     /// mid-burst does not itself change ``state`` or fault the connection.
     ///
-    /// - Returns: `true` if discovery succeeded and ``discoveredTools`` was
-    ///   replaced; `false` if it failed and ``discoveredTools`` was left
+    /// - Returns: `true` if discovery succeeded and `discoveredTools` was
+    ///   replaced; `false` if it failed and `discoveredTools` was left
     ///   unchanged.
     private func relistOnce() async -> Bool {
         do {
@@ -1357,7 +1357,7 @@ public actor MCPServer {
     /// Routes a server-initiated elicitation request to the coordinator.
     ///
     /// Enforces the no-secrets-in-form-mode rule (see
-    /// ``Elicitation/RequestSchema/requiresURLModeRouting`` and
+    /// `Elicitation.RequestSchema.requiresURLModeRouting` and
     /// ``ElicitationRouting``), and converts the coordinator's
     /// ``ElicitationResponse`` back into the `CreateElicitation.Result` the
     /// server expects.

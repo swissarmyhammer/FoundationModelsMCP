@@ -42,8 +42,8 @@ depends_on:
 - 01KWMS37EXGG7KRM8YN8ABXV7R
 - 01KWMS3F3P3HHZ56C1FK7S44DQ
 - 01KWMSDVP4JM77YR0YMCE9S5ME
-position_column: doing
-position_ordinal: '80'
+position_column: done
+position_ordinal: '9580'
 title: 'Examples: ElicitingAgent, CatalogBrowser, DynamicToolset'
 ---
 ## What

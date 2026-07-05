@@ -182,7 +182,7 @@ public struct SchemaConversion: Sendable, Equatable {
 /// Conversion happens in two stages, because `DynamicGenerationSchema`/
 /// `GenerationSchema` are opaque with no public introspection:
 ///
-/// 1. ``parse(_:name:)`` walks the raw `Value` into `SchemaIR` — the
+/// 1. ``parse(_:name:onDrop:)`` walks the raw `Value` into `SchemaIR` — the
 ///    inspectable representation tests assert against.
 /// 2. ``emit(_:)`` is a thin translation of the already-parsed `SchemaIR`
 ///    into `DynamicGenerationSchema` → `GenerationSchema`.
@@ -213,7 +213,7 @@ public enum SchemaConverter {
     /// Emits a `GenerationSchema` from an already-parsed `SchemaConversion`.
     ///
     /// Thin by design: every structural decision was already made during
-    /// ``parse(_:name:)``. This step only walks `SchemaIR` into
+    /// ``parse(_:name:onDrop:)``. This step only walks `SchemaIR` into
     /// `DynamicGenerationSchema` values and hands them to
     /// `GenerationSchema.init(root:dependencies:)`.
     ///

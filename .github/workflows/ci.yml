@@ -40,3 +40,30 @@ jobs:
 
       - name: Test
         run: swift test
+
+      - name: DocC
+        # Builds the FoundationModelsMCP.docc catalog via swift-docc-plugin,
+        # promoting every genuine DocC diagnostic (unresolved ``symbol``
+        # cross-references, malformed directives) to a build-failing error.
+        # This alone does NOT catch missing documentation on a public
+        # symbol — DocC has no "undocumented symbol" warning class, so
+        # --warnings-as-errors has nothing to promote for that case. See the
+        # "DocC documentation coverage" step below for the actual enforcement
+        # of the "zero missing-documentation warnings for public symbols"
+        # acceptance criterion.
+        run: swift package generate-documentation --target FoundationModelsMCP --warnings-as-errors
+
+      - name: DocC documentation coverage
+        # `--experimental-documentation-coverage` is the only DocC facility
+        # that reports missing documentation at all, and its own exit code
+        # ignores coverage entirely (it just writes a report). This step
+        # parses that report via Scripts/check-docc-coverage.py, which fails
+        # the build if any symbol this package itself declares is missing a
+        # doc-comment abstract — excluding a short, explicit allowlist of
+        # kinds/members DocC synthesizes with no source location to attach a
+        # comment to (see the script's own comments for the full rationale).
+        run: |
+          swift package generate-documentation --target FoundationModelsMCP \
+            --experimental-documentation-coverage --coverage-summary-level detailed \
+            > docc-coverage.txt
+          python3 Scripts/check-docc-coverage.py docc-coverage.txt

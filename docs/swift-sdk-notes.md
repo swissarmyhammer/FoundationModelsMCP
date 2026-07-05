@@ -70,12 +70,20 @@ route server-initiated elicitation requests to the host's
 
 - SeeAlso: https://modelcontextprotocol.io/specification/2025-11-25/client/elicitation
 
-## No other external dependencies
+## No other *runtime* dependencies
 
-`Package.swift` declares exactly one external dependency — swift-sdk — plus a
+`Package.swift`'s runtime-relevant dependencies are swift-sdk (the MCP client)
+and swift-log (structured logging, `import Logging` in `MCPServer`), plus a
 `linkerSettings: [.linkedFramework("FoundationModels")]` on the library target
 for the system `FoundationModels` framework. No MLX, no Router (plan.md →
-Decisions → Enforcement).
+Decisions → Enforcement) — the dependency this decision actually guards
+against.
+
+`Package.swift` additionally declares `swift-docc-plugin` as a package
+dependency (added for the DocC catalog task) — it is a documentation-build
+tool invoked via `swift package generate-documentation`, never imported by
+any target's source and never linked into a consumer of this library. It
+does not change the "no MLX, no Router" runtime footprint above.
 
 ## Cancellation: the SDK does not auto-propagate Swift `Task` cancellation
 

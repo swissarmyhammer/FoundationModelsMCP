@@ -42,7 +42,7 @@ public protocol ElicitationCoordinator: Sendable {
     /// visit; and ``MCPServer``'s no-secrets-in-form-mode enforcement
     /// downgrading a form-mode request whose `requestedSchema` contained a
     /// sensitive-marked field or a `format: "url"` field (see
-    /// ``Elicitation/RequestSchema/requiresURLModeRouting``) — a spec
+    /// `Elicitation.RequestSchema.requiresURLModeRouting`) — a spec
     /// violation by the server, in which case there is no genuine link and
     /// `url` is `nil`. The coordinator is responsible for presenting (or,
     /// in the `nil` case, safely refusing) the request appropriately either
@@ -70,6 +70,9 @@ public enum ElicitationResponse: Sendable, Equatable {
     case cancel
 }
 
+/// This package's additions to the swift-sdk's `Elicitation.RequestSchema` —
+/// the `secret`/URL-mode-routing convention described on each member below,
+/// on top of the spec-defined schema the SDK itself declares.
 extension Elicitation.RequestSchema {
     /// This package's custom JSON Schema keyword marking a property as
     /// holding a secret (a password, token, or payment credential) that must
@@ -92,16 +95,16 @@ extension Elicitation.RequestSchema {
     /// The JSON Schema `format` keyword name, whose value is checked against
     /// ``urlFormatValue`` by ``requiresURLModeRouting``.
     ///
-    /// Not `private`: see ``secretKeyword``'s doc for why.
+    /// Not `private`: see `secretKeyword`'s doc for why.
     static let formatKeyword = "format"
 
     /// The JSON Schema `format` value that also triggers URL-mode routing
-    /// alongside ``secretKeyword`` — see ``requiresURLModeRouting``.
+    /// alongside `secretKeyword` — see ``requiresURLModeRouting``.
     ///
-    /// Not `private`: see ``secretKeyword``'s doc for why.
+    /// Not `private`: see `secretKeyword`'s doc for why.
     static let urlFormatValue = "url"
 
-    /// Whether any property in ``properties`` is marked ``secretKeyword`` or
+    /// Whether any property in `properties` is marked `secretKeyword` or
     /// declares `format: "url"` — either of which means this schema must
     /// never reach
     /// ``ElicitationCoordinator/elicit(message:requestedSchema:)`` (form

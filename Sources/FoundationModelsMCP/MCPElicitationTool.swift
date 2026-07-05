@@ -23,13 +23,13 @@ import MCP
 /// model-chosen field names, can't be represented as a single generated
 /// property. This tool works around that with a **structure-of-arrays**
 /// shape instead of the more obvious (but disallowed — see below) array of
-/// per-field objects: ``fieldNamesKey``, ``fieldTypesKey``, and
-/// ``fieldDescriptionsKey`` are parallel arrays correlated by index, and
-/// ``requiredFieldNamesKey``/``sensitiveFieldNamesKey``/``urlFormatFieldNamesKey``
-/// each name a subset of ``fieldNamesKey`` by value. Every one of these is an
+/// per-field objects: `fieldNamesKey`, `fieldTypesKey`, and
+/// `fieldDescriptionsKey` are parallel arrays correlated by index, and
+/// `requiredFieldNamesKey`/`sensitiveFieldNamesKey`/`urlFormatFieldNamesKey`
+/// each name a subset of `fieldNamesKey` by value. Every one of these is an
 /// array of a flat primitive (`string`), never an array of objects, so the
 /// model still gets *real* constrained decoding over each field's name and
-/// type (``fieldTypesKey``'s items are enum-constrained to the four JSON
+/// type (`fieldTypesKey`'s items are enum-constrained to the four JSON
 /// Schema primitive type names) — unlike, say, asking the model to produce
 /// one opaque JSON-encoded string, which constrained decoding could not
 /// meaningfully restrict.
@@ -63,26 +63,26 @@ public struct MCPElicitationTool: FoundationModels.Tool {
     private static let fieldNamesKey = "fieldNames"
 
     /// The per-field JSON Schema primitive type argument's property key,
-    /// parallel to ``fieldNamesKey`` by index.
+    /// parallel to `fieldNamesKey` by index.
     private static let fieldTypesKey = "fieldTypes"
 
     /// The per-field human-readable description argument's property key,
-    /// parallel to ``fieldNamesKey`` by index.
+    /// parallel to `fieldNamesKey` by index.
     private static let fieldDescriptionsKey = "fieldDescriptions"
 
-    /// The required-subset argument's property key: the ``fieldNamesKey``
+    /// The required-subset argument's property key: the `fieldNamesKey`
     /// values (by name, not index) the user must answer.
     private static let requiredFieldNamesKey = "requiredFieldNames"
 
-    /// The sensitive-subset argument's property key: the ``fieldNamesKey``
+    /// The sensitive-subset argument's property key: the `fieldNamesKey`
     /// values (by name, not index) holding a secret that must never be
     /// collected via an ordinary form — see
-     /// ``Elicitation/RequestSchema/requiresURLModeRouting``.
+     /// `Elicitation.RequestSchema.requiresURLModeRouting`.
      private static let sensitiveFieldNamesKey = "sensitiveFieldNames"
 
-    /// The URL-typed-subset argument's property key: the ``fieldNamesKey``
+    /// The URL-typed-subset argument's property key: the `fieldNamesKey`
     /// values (by name, not index) whose answer must be a URL — also routed
-     /// to URL mode, per ``Elicitation/RequestSchema/requiresURLModeRouting``.
+     /// to URL mode, per `Elicitation.RequestSchema.requiresURLModeRouting`.
     private static let urlFormatFieldNamesKey = "urlFormatFieldNames"
 
     /// The JSON Schema keyword naming a field's primitive type, written into
@@ -93,13 +93,13 @@ public struct MCPElicitationTool: FoundationModels.Tool {
     /// The JSON Schema keyword naming a field's human-readable description.
     private static let descriptionKeyword = "description"
 
-    /// The JSON Schema primitive type names ``fieldTypesKey``'s items are
+    /// The JSON Schema primitive type names `fieldTypesKey`'s items are
     /// enum-constrained to, and the table `Elicitation.RequestSchema`
     /// properties are built from — the flat-primitive elicitation subset.
     private static let fieldTypeNames = ["string", "integer", "number", "boolean"]
 
-    /// The primitive type name substituted for a ``fieldNamesKey`` entry
-    /// whose parallel ``fieldTypesKey`` entry is missing (a shorter
+    /// The primitive type name substituted for a `fieldNamesKey` entry
+    /// whose parallel `fieldTypesKey` entry is missing (a shorter
     /// `fieldTypes` array than `fieldNames`) — a defensive fallback for a
     /// call that violates the correlated-arrays contract ``inputSchema``
     /// describes, never expected from a model actually constrained by
@@ -119,8 +119,8 @@ public struct MCPElicitationTool: FoundationModels.Tool {
     private static let acceptedRenderingHeader = "The user answered:"
 
     /// A JSON Schema `array` property whose `items` is a plain `.string`, the
-    /// shape shared by every ``fieldNamesKey``-correlated argument except
-    /// ``fieldTypesKey`` (which additionally enum-constrains its items).
+    /// shape shared by every `fieldNamesKey`-correlated argument except
+    /// `fieldTypesKey` (which additionally enum-constrains its items).
     ///
     /// - Parameter description: The property's JSON Schema `description`.
     /// - Returns: The property's JSON Schema node.
@@ -222,16 +222,16 @@ public struct MCPElicitationTool: FoundationModels.Tool {
 
     /// Elicits from the user and renders the outcome for the model.
     ///
-    /// Builds an ``Elicitation/RequestSchema`` from `arguments`'
+    /// Builds an `Elicitation.RequestSchema` from `arguments`'
     /// structure-of-arrays fields (see the type-level documentation), routes
-    /// it to ``coordinator`` via
+    /// it to `coordinator` via
     /// ``ElicitationRouting/route(message:requestedSchema:coordinator:)`` —
     /// which itself enforces the no-secrets-in-form-mode rule — and renders
     /// the coordinator's ``ElicitationResponse``:
     /// - `.accept(content:)`: the structured answer, as sorted-key JSON,
-    ///   under an ``acceptedRenderingHeader`` header.
-    /// - `.decline`: ``declinedRendering``.
-    /// - `.cancel`: ``cancelledRendering``.
+    ///   under an `acceptedRenderingHeader` header.
+    /// - `.decline`: `declinedRendering`.
+    /// - `.cancel`: `cancelledRendering`.
     ///
     /// - Parameter arguments: The generated arguments, already constrained
     ///   against ``parameters`` by the calling session.
@@ -261,8 +261,8 @@ public struct MCPElicitationTool: FoundationModels.Tool {
         return elements.compactMap(\.stringValue)
     }
 
-    /// Builds the ``Elicitation/RequestSchema`` this tool sends to
-    /// ``coordinator``, from `arguments`' structure-of-arrays fields.
+    /// Builds the `Elicitation.RequestSchema` this tool sends to
+    /// `coordinator`, from `arguments`' structure-of-arrays fields.
     ///
     /// - Parameter fields: The `call(arguments:)` arguments, already decoded
     ///   into `[String: Value]` by `GeneratedContentCodec`.
@@ -270,7 +270,7 @@ public struct MCPElicitationTool: FoundationModels.Tool {
     ///   `fieldNamesKey` entry becoming one `properties` entry keyed by name,
     ///   annotated with its type, optional description, and (when the name
     ///   appears in `sensitiveFieldNamesKey`/`urlFormatFieldNamesKey`) the
-     ///   `secret`/`format: "url"` markers ``Elicitation/RequestSchema/requiresURLModeRouting``
+     ///   `secret`/`format: "url"` markers `Elicitation.RequestSchema.requiresURLModeRouting`
     ///   checks for.
     private static func makeRequestSchema(from fields: [String: Value]) -> Elicitation.RequestSchema {
         let fieldNames = stringArray(fields[fieldNamesKey])
@@ -309,7 +309,7 @@ public struct MCPElicitationTool: FoundationModels.Tool {
     ///   - description: The field's human-readable description, or an empty
     ///     string to omit the `description` keyword entirely.
     ///   - isSensitive: Whether to mark this field
-    ///     ``Elicitation/RequestSchema/secretKeyword``.
+    ///     `Elicitation.RequestSchema.secretKeyword`.
      ///   - isURLFormat: Whether to mark this field `format: "url"`.
      /// - Returns: The field's JSON Schema node.
      private static func makeFieldSchema(
