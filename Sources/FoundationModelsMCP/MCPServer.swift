@@ -453,8 +453,11 @@ public actor MCPServer {
     private static func makeAsyncStream<T: Sendable>() -> (
         stream: AsyncStream<T>, continuation: AsyncStream<T>.Continuation
     ) {
-        var continuation: AsyncStream<T>.Continuation!
+        var continuation: AsyncStream<T>.Continuation?
         let stream = AsyncStream<T> { continuation = $0 }
+        guard let continuation else {
+            fatalError("AsyncStream initializer must invoke its closure")
+        }
         return (stream, continuation)
     }
 
