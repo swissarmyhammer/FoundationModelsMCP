@@ -702,13 +702,7 @@ public actor MCPServer {
                 .result(try await context.value)
             }
             group.addTask {
-                while true {
-                    let observedResetCount = await self.activeCalls[progressToken]?.deadline.resetCount ?? 0
-                    try await Task.sleep(for: timeout)
-                    let currentResetCount = await self.activeCalls[progressToken]?.deadline.resetCount ?? 0
-                    guard currentResetCount == observedResetCount else { continue }
-                    return .timedOut
-                }
+                try await self.watchForTimeout(progressToken: progressToken, timeout: timeout)
             }
             defer { group.cancelAll() }
             guard let outcome = try await group.next() else {
@@ -721,6 +715,31 @@ public actor MCPServer {
                 await cancelPendingCall(requestID: context.requestID, reason: "Call exceeded its per-call timeout")
                 throw MCPServerError.callTimedOut(toolName: toolName)
             }
+        }
+    }
+
+    /// Sleeps in real-wall-clock `timeout` increments until a full interval
+    /// elapses with no ``handleProgressNotification(_:)`` reset, returning
+    /// ``CallOutcome/timedOut`` once that happens.
+    ///
+    /// Pulled out of ``resultOrTimeout(toolName:context:progressToken:timeout:)``'s
+    /// `withThrowingTaskGroup` task into its own actor method so that task's
+    /// body — and this loop's reset-detecting `guard` — don't nest four
+    /// levels deep (`withThrowingTaskGroup` > `addTask` > `while` > `guard`).
+    ///
+    /// - Parameters:
+    ///   - progressToken: The token this call registered under in
+    ///     ``activeCalls``.
+    ///   - timeout: The full timeout duration to sleep in, between resets.
+    /// - Returns: Always ``CallOutcome/timedOut``, once a full `timeout`
+    ///   interval elapses with no reset.
+    private func watchForTimeout(progressToken: ProgressToken, timeout: Duration) async throws -> CallOutcome {
+        while true {
+            let observedResetCount = activeCalls[progressToken]?.deadline.resetCount ?? 0
+            try await Task.sleep(for: timeout)
+            let currentResetCount = activeCalls[progressToken]?.deadline.resetCount ?? 0
+            guard currentResetCount == observedResetCount else { continue }
+            return .timedOut
         }
     }
 
@@ -771,6 +790,22 @@ public actor MCPServer {
         }
     }
 
+    /// Builds an `isError` `CallTool.Result` carrying `text` as its sole
+    /// content — the shared shape behind every error result this actor
+    /// renders (``faultResult(for:)``, ``timedOutResult(toolName:)``,
+    /// ``cancelledResult(toolName:)``, ``notAvailableResult(for:)``), which
+    /// otherwise differ only in the message text.
+    ///
+    /// - Parameter text: The human-readable error description.
+    /// - Returns: A `CallTool.Result` with `isError` set, for
+    ///   ``ToolContentRenderer`` to render.
+    private static func errorResult(text: String) -> CallTool.Result {
+        CallTool.Result(
+            content: [.text(text: text, annotations: nil, _meta: nil)],
+            isError: true
+        )
+    }
+
     /// Returns the rendered error result for mid-call transport faults.
     ///
     /// This is what ``call(toolNamed:arguments:timeout:)`` returns in place
@@ -780,10 +815,7 @@ public actor MCPServer {
     /// - Returns: A `CallTool.Result` describing the fault, with `isError`
     ///   set, for ``ToolContentRenderer`` to render.
     private static func faultResult(for error: any Error) -> CallTool.Result {
-        CallTool.Result(
-            content: [.text(text: "Transport fault: \(error)", annotations: nil, _meta: nil)],
-            isError: true
-        )
+        errorResult(text: "Transport fault: \(error)")
     }
 
     /// Returns the rendered error result for a call that exceeded its
@@ -797,10 +829,7 @@ public actor MCPServer {
     /// - Returns: A `CallTool.Result` describing the timeout, with
     ///   `isError` set, for ``ToolContentRenderer`` to render.
     private static func timedOutResult(toolName: String) -> CallTool.Result {
-        CallTool.Result(
-            content: [.text(text: "Tool \"\(toolName)\" timed out.", annotations: nil, _meta: nil)],
-            isError: true
-        )
+        errorResult(text: "Tool \"\(toolName)\" timed out.")
     }
 
     /// Returns the rendered error result for a call whose Swift `Task` was
@@ -814,10 +843,7 @@ public actor MCPServer {
     /// - Returns: A `CallTool.Result` describing the cancellation, with
     ///   `isError` set, for ``ToolContentRenderer`` to render.
     private static func cancelledResult(toolName: String) -> CallTool.Result {
-        CallTool.Result(
-            content: [.text(text: "Tool \"\(toolName)\" call was cancelled.", annotations: nil, _meta: nil)],
-            isError: true
-        )
+        errorResult(text: "Tool \"\(toolName)\" call was cancelled.")
     }
 
     /// Attempts a single connection bounded by the specified real
@@ -1134,10 +1160,7 @@ public actor MCPServer {
     /// - Returns: A `CallTool.Result` with `isError` set, describing `name`
     ///   as no longer available.
     private static func notAvailableResult(for name: String) -> CallTool.Result {
-        CallTool.Result(
-            content: [.text(text: "Tool \"\(name)\" is no longer available.", annotations: nil, _meta: nil)],
-            isError: true
-        )
+        errorResult(text: "Tool \"\(name)\" is no longer available.")
     }
 
     /// Fetches all tool pages from the server via paginated `tools/list`.
