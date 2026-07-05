@@ -4,66 +4,18 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build-and-test:
-    # This package targets macOS 27 / iOS 27 only (see plan.md → Decisions →
-    # Min OS) and imports the system `FoundationModels` framework, which ships
-    # with the OS 27 SDK. GitHub-hosted `macos-*` runners may not yet carry an
-    # Xcode with the OS 27 SDK; if hosted runners fail to resolve it, this job
-    # requires a **self-hosted runner** with Xcode 27 (or later) installed.
-    runs-on: [self-hosted, macOS]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Toolchain info
-        run: |
-          xcodebuild -version
-          swift --version
-
-      - name: Build
-        run: swift build
-
-      - name: Build Examples
-        # Each Examples/ target compiled individually, per plan.md's Examples
-        # section and the acceptance criterion that `swift build --target
-        # <Name>` succeeds for every one of them — not just as part of the
-        # whole-package `swift build` above.
-        run: |
-          swift build --target EchoTool
-          swift build --target FileAssistant
-          swift build --target ToolPicking
-          swift build --target RemoteHTTP
-          swift build --target ElicitingAgent
-          swift build --target CatalogBrowser
-          swift build --target DynamicToolset
-
-      - name: Test
-        run: swift test
-
-      - name: DocC
-        # Builds the FoundationModelsMCP.docc catalog via swift-docc-plugin,
-        # promoting every genuine DocC diagnostic (unresolved ``symbol``
-        # cross-references, malformed directives) to a build-failing error.
-        # This alone does NOT catch missing documentation on a public
-        # symbol — DocC has no "undocumented symbol" warning class, so
-        # --warnings-as-errors has nothing to promote for that case. See the
-        # "DocC documentation coverage" step below for the actual enforcement
-        # of the "zero missing-documentation warnings for public symbols"
-        # acceptance criterion.
-        run: swift package generate-documentation --target FoundationModelsMCP --warnings-as-errors
-
-      - name: DocC documentation coverage
-        # `--experimental-documentation-coverage` is the only DocC facility
-        # that reports missing documentation at all, and its own exit code
-        # ignores coverage entirely (it just writes a report). This step
-        # parses that report via Scripts/check-docc-coverage.py, which fails
-        # the build if any symbol this package itself declares is missing a
-        # doc-comment abstract — excluding a short, explicit allowlist of
-        # kinds/members DocC synthesizes with no source location to attach a
-        # comment to (see the script's own comments for the full rationale).
-        run: |
-          swift package generate-documentation --target FoundationModelsMCP \
-            --experimental-documentation-coverage --coverage-summary-level detailed \
-            > docc-coverage.txt
-          python3 Scripts/check-docc-coverage.py docc-coverage.txt
+  ci:
+    uses: swissarmyhammer/workflows/.github/workflows/swift-ci.yaml@main
+    with:
+      example-targets: >-
+        EchoTool FileAssistant ToolPicking RemoteHTTP
+        ElicitingAgent CatalogBrowser DynamicToolset
+      docc-target: FoundationModelsMCP
+      docc-coverage-script: Scripts/check-docc-coverage.py
