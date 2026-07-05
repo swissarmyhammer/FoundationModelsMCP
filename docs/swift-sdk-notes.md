@@ -76,3 +76,66 @@ route server-initiated elicitation requests to the host's
 `linkerSettings: [.linkedFramework("FoundationModels")]` on the library target
 for the system `FoundationModels` framework. No MLX, no Router (plan.md →
 Decisions → Enforcement).
+
+## Cancellation: the SDK does not auto-propagate Swift `Task` cancellation
+
+Recorded at M5/Hardening time (plan.md → Connection lifecycle →
+"Cancellation, progress, health") while implementing
+`MCPServer.call(toolNamed:arguments:timeout:)`'s cancellation support.
+
+**Cancelling a Swift `Task` that is awaiting an MCP request result does
+*not* automatically make `MCP.Client` send a protocol-level
+`notifications/cancelled`.** Confirmed by reading the pinned tag's own
+source, not by assumption:
+
+- `Client.send<M: Method>(_:)` (`Sources/MCP/Client/Client.swift`) returns a
+  `RequestContext<M.Result>` wrapping the request's `id` and an internal
+  `Task` that resolves a `CheckedContinuation` once the matching response
+  arrives (or the pending request is otherwise removed). Nothing in that
+  path observes the *caller's* `Task` cancellation state.
+- `RequestContext.value` (`Sources/MCP/Base/Utilities/RequestContext.swift`)
+  just `await`s that internal task's `.value` — this is not itself a
+  cancellation checkpoint tied to whatever `Task` is awaiting it, since the
+  internal task is an independent, already-started unit of work.
+- Sending the cancellation notification is a **separate, explicit** client
+  API: `Client.cancelRequest(_ requestID: ID, reason: String?) async throws`
+  removes the pending request, resumes its continuation with
+  `CancellationError()`, and *then* sends
+  `CancelledNotification.message(.init(requestId:reason:))` over the wire.
+  Its own doc comment is explicit about this being something the caller
+  must invoke: "This allows you to track and cancel the request by sending a
+  CancelledNotification to the server using the requestID."
+
+So merely wrapping a call in a Swift `Task` and later calling `.cancel()` on
+it does nothing at the protocol level by itself — the cooperative
+cancellation flag is set, but nothing in the SDK reacts to it. `MCPServer`
+therefore sends the notification **explicitly**: `call(toolNamed:arguments:timeout:)`
+wraps its await in `withTaskCancellationHandler(operation:onCancel:)`, whose
+`onCancel` closure — which fires synchronously the instant the enclosing
+`Task` is cancelled, even mid-await — spawns a `Task` that calls
+`client.cancelRequest(_:reason:)`. That single mechanism also happens to be
+exactly what's needed to unblock the still-pending continuation so
+`MCPServer`'s internal `withThrowingTaskGroup` race (response vs. timeout)
+can actually finish instead of waiting forever on an orphaned child task —
+the same `cancelRequest` call is reused for the per-call timeout's own
+"stop waiting on this request" case.
+
+- SeeAlso: https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/cancellation
+
+## Progress notifications: opt-in via `_meta.progressToken`, no auto-reset semantics
+
+Also recorded at M5/Hardening time, alongside cancellation.
+
+`notifications/progress` is entirely **opt-in per request**: a client only
+receives progress for a given `tools/call` if it attaches a `progressToken`
+to that request's `_meta` (`Metadata.progressToken`,
+`Sources/MCP/Base/Utilities/Progress.swift`); a server has no obligation to
+honor it even then (per spec, "the receiver is not obligated to provide
+these notifications"). The SDK itself has no concept of a per-request
+timeout or a "progress resets the timeout" behavior — that policy is purely
+`MCPServer`'s own (see `CallDeadline` and
+`MCPServer.resultOrTimeout(toolName:context:progressToken:timeout:)`), built
+on top of the SDK's plain `Client.onNotification(ProgressNotification.self)`
+registration, matching the existing `notifications/tools/list_changed`
+handler-registration pattern (`registerToolListChangedHandler()`) rather than
+anything progress-specific in the SDK.

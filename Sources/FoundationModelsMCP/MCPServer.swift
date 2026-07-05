@@ -125,6 +125,54 @@ public enum MCPServerError: Error, Sendable, Equatable {
     /// ``MCPServer/connect(transport:backoffPolicy:)``'s retry loop,
     /// exceeded its ``BackoffPolicy/connectTimeout``.
     case connectAttemptTimedOut
+
+    /// A ``MCPServer/call(toolNamed:arguments:timeout:)`` exceeded its
+    /// per-call timeout with no `notifications/progress` for it arriving in
+    /// time to reset the deadline — carries the tool's name for
+    /// diagnostics.
+    case callTimedOut(toolName: String)
+}
+
+/// One `notifications/progress` update ``MCPServer`` surfaces to the host on
+/// ``MCPServer/progressUpdates``, enriched with the name of the tool the
+/// progress belongs to.
+///
+/// The wire notification itself only carries the opaque ``ProgressToken``
+/// ``MCPServer/call(toolNamed:arguments:timeout:)`` generated for the call —
+/// this type pairs that update with the tool name the host actually cares
+/// about, since ``MCPServer`` alone knows which call a token belongs to.
+public struct CallProgress: Sendable, Equatable {
+    /// The name of the tool this progress update belongs to.
+    public let toolName: String
+
+    /// The current progress value, per `notifications/progress`. Should
+    /// increase monotonically as the call proceeds.
+    public let progress: Double
+
+    /// The total expected progress value, if the server provided one.
+    public let total: Double?
+
+    /// A human-readable message describing the current progress, if the
+    /// server provided one.
+    public let message: String?
+}
+
+/// Bookkeeping ``MCPServer`` tracks for one in-flight
+/// ``MCPServer/call(toolNamed:arguments:timeout:)``, keyed by its generated
+/// ``ProgressToken`` in ``MCPServer/activeCalls``.
+///
+/// - SeeAlso: ``CallDeadline`` for the resettable-timeout arithmetic
+///   ``deadline`` wraps.
+private struct ActiveCall {
+    /// The name of the tool this call invoked — the wire
+    /// `notifications/progress` only carries the opaque ``ProgressToken``,
+    /// not the tool name ``CallProgress`` reports to the host.
+    let toolName: String
+
+    /// This call's resettable timeout deadline, reset by every
+    /// `notifications/progress` for it (see
+    /// ``MCPServer/handleProgressNotification(_:)``).
+    var deadline: CallDeadline
 }
 
 /// Owns one `MCP.Client` connection to a single MCP server: the async
@@ -224,6 +272,37 @@ public actor MCPServer {
     /// The continuation ``emitCatalogSnapshot()`` yields new snapshots to —
     /// paired with ``catalogUpdates`` once, at construction time.
     private let catalogContinuation: AsyncStream<ToolCatalog>.Continuation
+
+    /// The stream of ``CallProgress`` updates this server surfaces to the
+    /// host, one per inbound `notifications/progress` for any currently
+    /// in-flight ``call(toolNamed:arguments:timeout:)``.
+    ///
+    /// - Important: Backed by a single continuation, like ``catalogUpdates``:
+    ///   only one concurrent consumer should iterate this stream at a time.
+    public let progressUpdates: AsyncStream<CallProgress>
+
+    /// The continuation ``handleProgressNotification(_:)`` yields new
+    /// updates to — paired with ``progressUpdates`` once, at construction
+    /// time.
+    private let progressContinuation: AsyncStream<CallProgress>.Continuation
+
+    /// The default timeout ``call(toolNamed:arguments:timeout:)`` uses when
+    /// its own `timeout` parameter is `nil` — the host-configurable default
+    /// per `plan.md`'s Lifecycle policy.
+    private let defaultCallTimeout: Duration
+
+    /// Bookkeeping for every ``call(toolNamed:arguments:timeout:)`` current
+    /// in flight, keyed by the ``ProgressToken`` that call generated —
+    /// looked up by ``handleProgressNotification(_:)`` to reset the right
+    /// call's timeout deadline and to attribute a ``CallProgress`` update to
+    /// its tool name.
+    private var activeCalls: [ProgressToken: ActiveCall] = [:]
+
+    /// Whether ``registerProgressHandler()`` has already run for this actor
+    /// — guards against re-registering on every reconnect, the same reason
+    /// ``hasRegisteredToolListChangedHandler`` does for
+    /// ``registerToolListChangedHandler()``.
+    private var hasRegisteredProgressHandler = false
 
     /// Whether ``registerToolListChangedHandler()`` has already run for this
     /// actor — guards against re-registering on every reconnect, since
@@ -325,9 +404,24 @@ public actor MCPServer {
     ///     default) means this connection never declares the elicitation
     ///     client capability and never registers a handler for it.
     ///   - clock: The clock ``connect(transport:backoffPolicy:)`` sleeps on
-    ///     between retries. Defaults to a real `ContinuousClock`; tests
-    ///     substitute a virtual clock to exercise a full backoff schedule
-    ///     without any real delay.
+    ///     between retries, and ``coalesceAndRelist()`` sleeps on for its
+    ///     coalescing window. Defaults to a real `ContinuousClock`; tests
+    ///     substitute a virtual clock to exercise a full backoff schedule or
+    ///     coalescing window without any real delay.
+    ///
+    ///     Never used by ``call(toolNamed:arguments:timeout:)``'s own
+    ///     timeout-enforcement loop, which always measures real wall-clock
+    ///     time (`Task.sleep(for:)`) instead — the same reason
+    ///     ``performConnectAttempt(transport:timeout:)``'s per-attempt
+    ///     timeout does: a virtual clock that never actually suspends (like
+    ///     ``ManualClock`` in this package's own tests) would make the
+    ///     timeout side of that race always "win" instantly against a call
+    ///     that's actually in flight, for every test that happens to inject
+    ///     one for an unrelated reason (e.g. exercising backoff). See
+    ///     `Tests/FoundationModelsMCPTests/CancellationTests.swift`.
+    ///   - defaultCallTimeout: The default per-call timeout
+    ///     ``call(toolNamed:arguments:timeout:)`` uses when its own
+    ///     `timeout` parameter is `nil`. Defaults to 30 seconds.
     ///   - logger: The structured logger every retry, reconnect, and
     ///     mid-call fault is reported to. Defaults to a logger labeled
     ///     `"com.foundationmodelsmcp.mcpserver"`.
@@ -336,12 +430,14 @@ public actor MCPServer {
         name: String? = nil,
         elicitationCoordinator: (any ElicitationCoordinator)? = nil,
         clock: any Clock<Duration> = ContinuousClock(),
+        defaultCallTimeout: Duration = .seconds(30),
         logger: Logger = Logger(label: "com.foundationmodelsmcp.mcpserver")
     ) {
         self.client = client
         self.hostSuppliedName = name
         self.elicitationCoordinator = elicitationCoordinator
         self.clock = clock
+        self.defaultCallTimeout = defaultCallTimeout
         self.logger = logger
 
         var catalogContinuation: AsyncStream<ToolCatalog>.Continuation!
@@ -349,6 +445,12 @@ public actor MCPServer {
             catalogContinuation = continuation
         }
         self.catalogContinuation = catalogContinuation
+
+        var progressContinuation: AsyncStream<CallProgress>.Continuation!
+        self.progressUpdates = AsyncStream { continuation in
+            progressContinuation = continuation
+        }
+        self.progressContinuation = progressContinuation
     }
 
     /// Connects `client` to `transport`, then discovers every tool the
@@ -471,25 +573,79 @@ public actor MCPServer {
 
     /// Calls a tool and renders the result for the model.
     ///
+    /// Attaches a fresh ``ProgressToken`` to the call's `_meta` so incoming
+    /// `notifications/progress` for it can be routed to ``progressUpdates``
+    /// and reset its timeout (see ``handleProgressNotification(_:)``), races
+    /// the call's own response against a resettable `timeout` (defaulting to
+    /// ``defaultCallTimeout``), and cooperates with Swift `Task`
+    /// cancellation: cancelling the `Task` this call runs in sends a
+    /// protocol-level `notifications/cancelled` for it, via
+    /// `MCP.Client.cancelRequest(_:reason:)` — the swift-sdk does not do
+    /// this automatically on `Task` cancellation (see
+    /// `docs/swift-sdk-notes.md`), so this method sends it explicitly
+    /// instead of leaving orphaned work running on the server.
+    ///
     /// Maps a mid-call transport fault to an `isError`-style rendered result
     /// (via ``ToolContentRenderer``) instead of throwing or hanging, and
     /// auto-reconnects with ``activeBackoffPolicy`` as a side effect — so the
     /// model can react to *this* call's failure while the connection heals
-    /// for the next one.
+    /// for the next one. A timeout or a cancelled `Task` also render their
+    /// own `isError`-style result but, unlike a transport fault, never touch
+    /// ``state`` or trigger a reconnect — the connection itself is fine in
+    /// both cases, only this one call was aborted.
     ///
-    /// Never throws: a transport fault becomes rendered `isError` content,
+    /// Never throws: every failure mode becomes rendered `isError` content,
     /// exactly like a server-reported `isError` result already is (see
     /// `MCPTool/call(arguments:)`).
     ///
     /// - Parameters:
     ///   - name: The name of the tool to call.
     ///   - arguments: Arguments to use for the tool call.
+    ///   - timeout: The maximum time this call may run before it is treated
+    ///     as timed out, reset by every `notifications/progress` received
+    ///     for it. Defaults to ``defaultCallTimeout``.
     /// - Returns: The rendered `tools/call` result on success, or a rendered
-    ///   `isError` result describing the transport fault.
-    public func call(toolNamed name: String, arguments: [String: Value]? = nil) async -> String {
+    ///   `isError` result describing a transport fault, a timeout, or a
+    ///   Swift `Task` cancellation.
+    public func call(
+        toolNamed name: String, arguments: [String: Value]? = nil, timeout: Duration? = nil
+    ) async -> String {
+        let progressToken = ProgressToken.unique()
+        let effectiveTimeout = timeout ?? defaultCallTimeout
+        // Registered before the request is even sent, not after, so a
+        // same-actor-turn progress notification arriving on an
+        // ultra-low-latency transport can never be dropped for lacking a
+        // matching ``activeCalls`` entry yet.
+        activeCalls[progressToken] = ActiveCall(toolName: name, deadline: CallDeadline(timeout: effectiveTimeout))
+        defer { activeCalls[progressToken] = nil }
+
         do {
-            let result = try await client.callTool(name: name, arguments: arguments)
+            let context: RequestContext<CallTool.Result> = try await client.callTool(
+                name: name, arguments: arguments, meta: Metadata(progressToken: progressToken))
+            let result = try await withTaskCancellationHandler {
+                try await resultOrTimeout(
+                    toolName: name, context: context, progressToken: progressToken, timeout: effectiveTimeout)
+            } onCancel: {
+                // `withTaskCancellationHandler`'s onCancel must be
+                // synchronous, so sending the cancellation notification (an
+                // async call on the `client` actor) requires its own
+                // unstructured `Task` — one of the few deliberate exceptions
+                // to this file's "no unmanaged Task {}" convention (see also
+                // `performConnectAttempt(transport:timeout:)`'s un-joined
+                // connect-race `Task`s), since there is no other way to
+                // bridge a synchronous cancellation hook to async work.
+                Task { await self.cancelPendingCall(requestID: context.requestID, reason: "Swift task cancelled") }
+            }
             return ToolContentRenderer.render(result: result)
+        } catch is CancellationError {
+            return ToolContentRenderer.render(result: Self.cancelledResult(toolName: name))
+        } catch MCPServerError.callTimedOut(let timedOutToolName) {
+            logger.warning(
+                "MCPServer call timed out",
+                metadata: [
+                    Self.serverMetadataKey: "\(identityNameForDiagnostics)", "tool": "\(timedOutToolName)",
+                ])
+            return ToolContentRenderer.render(result: Self.timedOutResult(toolName: timedOutToolName))
         } catch {
             logger.warning(
                 "MCPServer mid-call transport fault",
@@ -498,6 +654,93 @@ public actor MCPServer {
             emitCatalogSnapshot()
             await reconnectAfterFault()
             return ToolContentRenderer.render(result: Self.faultResult(for: error))
+        }
+    }
+
+    /// Whichever of a ``call(toolNamed:arguments:timeout:)``'s own response
+    /// or its resettable timeout resolves first.
+    private enum CallOutcome: Sendable {
+        case result(CallTool.Result)
+        case timedOut
+    }
+
+    /// Races `context`'s response against its resettable timeout, returning
+    /// the response if it wins or throwing
+    /// ``MCPServerError/callTimedOut(toolName:)`` if the timeout wins.
+    ///
+    /// The timeout side loops sleeping in real-wall-clock full-`timeout`
+    /// increments (`Task.sleep(for:)` — deliberately never ``clock``; see
+    /// ``clock``'s own doc comment for why), comparing ``ActiveCall/deadline``'s
+    /// ``CallDeadline/resetCount`` before and after each sleep to detect
+    /// whether ``handleProgressNotification(_:)`` reset the deadline while
+    /// it slept — see ``CallDeadline`` for why that comparison, not a
+    /// literal clock-instant deadline, is what makes this loop's logic
+    /// unit-testable in isolation. If the timeout wins, explicitly cancels
+    /// `context`'s still-pending request first (via
+    /// ``cancelPendingCall(requestID:reason:)``) so its response-awaiting
+    /// child task actually finishes instead of leaving this method's
+    /// `withThrowingTaskGroup` waiting on an orphaned task forever.
+    ///
+    /// - Parameters:
+    ///   - toolName: The tool's name, for
+    ///     ``MCPServerError/callTimedOut(toolName:)``.
+    ///   - context: The in-flight request context to await.
+    ///   - progressToken: The token this call registered under in
+    ///     ``activeCalls``.
+    ///   - timeout: The full timeout duration to sleep in, between resets.
+    /// - Returns: The tool's `CallTool.Result` if it completes before timing
+    ///   out.
+    /// - Throws: ``MCPServerError/callTimedOut(toolName:)`` if the timeout
+    ///   wins; whatever `context`'s underlying request throws otherwise
+    ///   (including `CancellationError` if the caller's own Swift `Task` was
+    ///   cancelled).
+    private func resultOrTimeout(
+        toolName: String, context: RequestContext<CallTool.Result>, progressToken: ProgressToken, timeout: Duration
+    ) async throws -> CallTool.Result {
+        try await withThrowingTaskGroup(of: CallOutcome.self) { group in
+            group.addTask {
+                .result(try await context.value)
+            }
+            group.addTask {
+                while true {
+                    let observedResetCount = await self.activeCalls[progressToken]?.deadline.resetCount ?? 0
+                    try await Task.sleep(for: timeout)
+                    let currentResetCount = await self.activeCalls[progressToken]?.deadline.resetCount ?? 0
+                    guard currentResetCount == observedResetCount else { continue }
+                    return .timedOut
+                }
+            }
+            defer { group.cancelAll() }
+            guard let outcome = try await group.next() else {
+                throw MCPServerError.callTimedOut(toolName: toolName)
+            }
+            switch outcome {
+            case .result(let result):
+                return result
+            case .timedOut:
+                await cancelPendingCall(requestID: context.requestID, reason: "Call exceeded its per-call timeout")
+                throw MCPServerError.callTimedOut(toolName: toolName)
+            }
+        }
+    }
+
+    /// Sends a `notifications/cancelled` for `requestID` and unblocks its
+    /// pending continuation with `CancellationError`, via
+    /// `MCP.Client.cancelRequest(_:reason:)` — the shared plumbing behind
+    /// both ``call(toolNamed:arguments:timeout:)``'s Swift-task-cancellation
+    /// path and its timeout-expiry path (see ``resultOrTimeout(toolName:context:progressToken:timeout:)``).
+    ///
+    /// - Parameters:
+    ///   - requestID: The in-flight request's id.
+    ///   - reason: A human-readable reason included in the cancellation
+    ///     notification, for the server's diagnostics.
+    private func cancelPendingCall(requestID: ID, reason: String) async {
+        do {
+            try await client.cancelRequest(requestID, reason: reason)
+        } catch {
+            logger.warning(
+                "MCPServer failed to send a cancellation notification",
+                metadata: [Self.serverMetadataKey: "\(identityNameForDiagnostics)", Self.errorMetadataKey: "\(error)"])
         }
     }
 
@@ -530,8 +773,8 @@ public actor MCPServer {
 
     /// Returns the rendered error result for mid-call transport faults.
     ///
-    /// This is what ``call(toolNamed:arguments:)`` returns in place of
-    /// throwing when a mid-call transport fault occurs.
+    /// This is what ``call(toolNamed:arguments:timeout:)`` returns in place
+    /// of throwing when a mid-call transport fault occurs.
     ///
     /// - Parameter error: The underlying transport error the call caught.
     /// - Returns: A `CallTool.Result` describing the fault, with `isError`
@@ -539,6 +782,40 @@ public actor MCPServer {
     private static func faultResult(for error: any Error) -> CallTool.Result {
         CallTool.Result(
             content: [.text(text: "Transport fault: \(error)", annotations: nil, _meta: nil)],
+            isError: true
+        )
+    }
+
+    /// Returns the rendered error result for a call that exceeded its
+    /// per-call timeout.
+    ///
+    /// This is what ``call(toolNamed:arguments:timeout:)`` returns in place
+    /// of throwing when its ``resultOrTimeout(toolName:context:progressToken:timeout:)``
+    /// race is won by the timeout.
+    ///
+    /// - Parameter toolName: The name of the tool that timed out.
+    /// - Returns: A `CallTool.Result` describing the timeout, with
+    ///   `isError` set, for ``ToolContentRenderer`` to render.
+    private static func timedOutResult(toolName: String) -> CallTool.Result {
+        CallTool.Result(
+            content: [.text(text: "Tool \"\(toolName)\" timed out.", annotations: nil, _meta: nil)],
+            isError: true
+        )
+    }
+
+    /// Returns the rendered error result for a call whose Swift `Task` was
+    /// cancelled.
+    ///
+    /// This is what ``call(toolNamed:arguments:timeout:)`` returns in place
+    /// of throwing when the caller's own `Task` is cancelled mid-call.
+    ///
+    /// - Parameter toolName: The name of the tool the cancelled call
+    ///   invoked.
+    /// - Returns: A `CallTool.Result` describing the cancellation, with
+    ///   `isError` set, for ``ToolContentRenderer`` to render.
+    private static func cancelledResult(toolName: String) -> CallTool.Result {
+        CallTool.Result(
+            content: [.text(text: "Tool \"\(toolName)\" call was cancelled.", annotations: nil, _meta: nil)],
             isError: true
         )
     }
@@ -645,6 +922,10 @@ public actor MCPServer {
         if !hasRegisteredToolListChangedHandler {
             hasRegisteredToolListChangedHandler = true
             await registerToolListChangedHandler()
+        }
+        if !hasRegisteredProgressHandler {
+            hasRegisteredProgressHandler = true
+            await registerProgressHandler()
         }
         do {
             let initializeResult = try await client.connect(transport: transport)
@@ -879,6 +1160,42 @@ public actor MCPServer {
             cursor = page.nextCursor
         } while cursor != nil
         return try allTools.map { try MCPTool(tool: $0, client: client) }
+    }
+
+    // MARK: - Progress: notifications/progress routed to in-flight calls
+
+    /// Registers the notification handler for `notifications/progress`.
+    ///
+    /// Routes every inbound progress notification to
+    /// ``handleProgressNotification(_:)`` — called exactly once per
+    /// ``MCPServer`` (see ``hasRegisteredProgressHandler``), never on every
+    /// reconnect, mirroring ``registerToolListChangedHandler()``.
+    private func registerProgressHandler() async {
+        await client.onNotification(ProgressNotification.self) { [weak self] message in
+            guard let self else { return }
+            await self.handleProgressNotification(message.params)
+        }
+    }
+
+    /// Resets the matching in-flight call's timeout deadline and republishes
+    /// the update on ``progressUpdates``.
+    ///
+    /// A no-op if `parameters.progressToken` does not match any call this
+    /// server currently tracks in ``activeCalls`` — e.g. the notification
+    /// arrived after the call already finished or timed out.
+    ///
+    /// - Parameter parameters: The inbound `notifications/progress`
+    ///   payload.
+    private func handleProgressNotification(_ parameters: ProgressNotification.Parameters) {
+        guard var activeCall = activeCalls[parameters.progressToken] else { return }
+        activeCall.deadline.resetForProgress()
+        activeCalls[parameters.progressToken] = activeCall
+        progressContinuation.yield(
+            CallProgress(
+                toolName: activeCall.toolName,
+                progress: parameters.progress,
+                total: parameters.total,
+                message: parameters.message))
     }
 
     // MARK: - Live catalog: coalesced tools/list_changed re-list
