@@ -441,17 +441,21 @@ public actor MCPServer {
         self.defaultCallTimeout = defaultCallTimeout
         self.logger = logger
 
-        var catalogContinuation: AsyncStream<ToolCatalog>.Continuation!
-        self.catalogUpdates = AsyncStream { continuation in
-            catalogContinuation = continuation
-        }
-        self.catalogContinuation = catalogContinuation
+        (self.catalogUpdates, self.catalogContinuation) = Self.makeAsyncStream()
+        (self.progressUpdates, self.progressContinuation) = Self.makeAsyncStream()
+    }
 
-        var progressContinuation: AsyncStream<CallProgress>.Continuation!
-        self.progressUpdates = AsyncStream { continuation in
-            progressContinuation = continuation
-        }
-        self.progressContinuation = progressContinuation
+    /// Builds a fresh `AsyncStream` paired with the continuation that feeds
+    /// it, so a stored property and its yielding continuation are always
+    /// initialized together at construction time.
+    ///
+    /// - Returns: The stream and the continuation that yields values to it.
+    private static func makeAsyncStream<T: Sendable>() -> (
+        stream: AsyncStream<T>, continuation: AsyncStream<T>.Continuation
+    ) {
+        var continuation: AsyncStream<T>.Continuation!
+        let stream = AsyncStream<T> { continuation = $0 }
+        return (stream, continuation)
     }
 
     /// Connects `client` to `transport`, then discovers every tool the
@@ -1190,6 +1194,26 @@ public actor MCPServer {
 
     // MARK: - Progress: notifications/progress routed to in-flight calls
 
+    /// Registers `client.onNotification(_:handler:)` for `type`, guarding
+    /// against `self` having been deallocated by the time a notification
+    /// arrives — the `[weak self]` boilerplate shared by
+    /// ``registerProgressHandler()`` and ``registerToolListChangedHandler()``,
+    /// which differ only in the notification type and the handler method
+    /// each invokes.
+    ///
+    /// - Parameters:
+    ///   - type: The `Notification` type to register a handler for.
+    ///   - handler: Invoked with `self` and the received message once
+    ///     `self` is confirmed still alive.
+    private func registerNotificationHandler<N: Notification>(
+        _ type: N.Type, handler: @escaping @Sendable (MCPServer, Message<N>) async -> Void
+    ) async {
+        await client.onNotification(type) { [weak self] message in
+            guard let self else { return }
+            await handler(self, message)
+        }
+    }
+
     /// Registers the notification handler for `notifications/progress`.
     ///
     /// Routes every inbound progress notification to
@@ -1197,9 +1221,8 @@ public actor MCPServer {
     /// ``MCPServer`` (see ``hasRegisteredProgressHandler``), never on every
     /// reconnect, mirroring ``registerToolListChangedHandler()``.
     private func registerProgressHandler() async {
-        await client.onNotification(ProgressNotification.self) { [weak self] message in
-            guard let self else { return }
-            await self.handleProgressNotification(parameters: message.params)
+        await registerNotificationHandler(ProgressNotification.self) { server, message in
+            await server.handleProgressNotification(parameters: message.params)
         }
     }
 
@@ -1233,9 +1256,8 @@ public actor MCPServer {
     /// ``MCPServer`` (see ``hasRegisteredToolListChangedHandler``), never on
     /// every reconnect.
     private func registerToolListChangedHandler() async {
-        await client.onNotification(ToolListChangedNotification.self) { [weak self] _ in
-            guard let self else { return }
-            await self.handleToolListChangedNotification()
+        await registerNotificationHandler(ToolListChangedNotification.self) { server, _ in
+            await server.handleToolListChangedNotification()
         }
     }
 
