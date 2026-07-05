@@ -230,11 +230,12 @@ public actor MCPServer {
 
     /// This server's stable identity, established once the first
     /// ``connect(transport:)`` call fully succeeds — handshake *and*
-    /// discovery — and never recomputed afterward. `nil` until then, and
-    /// still `nil` after a call that fails partway through (e.g. the
-    /// handshake succeeds but discovery throws), so ``identity`` and
-    /// ``state`` never disagree about whether a connection ever truly
-    /// succeeded.
+    /// discovery — and never recomputed afterward.
+    ///
+    /// `nil` until then, and still `nil` after a call that fails partway
+    /// through (e.g. the handshake succeeds but discovery throws), so
+    /// ``identity`` and ``state`` never disagree about whether a connection
+    /// ever truly succeeded.
     public private(set) var identity: ServerIdentity?
 
     /// The tools discovered by the most recent successful
