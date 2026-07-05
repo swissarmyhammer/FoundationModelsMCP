@@ -98,8 +98,10 @@ public struct BackoffPolicy: Sendable, Equatable {
         self.maxAttempts = maxAttempts
     }
 
-    /// The default policy: a 10-second per-attempt timeout, a 250
-    /// millisecond initial backoff doubling up to a 30-second cap, and 5
+    /// The default policy: a 10-second per-attempt timeout with a 250
+    /// millisecond initial backoff.
+    ///
+    /// Backoff doubles after each failure up to a 30-second cap, with 5
     /// attempts maximum.
     public static let `default` = BackoffPolicy()
 }
@@ -187,8 +189,10 @@ public actor MCPServer {
     /// succeeded.
     public private(set) var identity: ServerIdentity?
 
-    /// Every tool discovered by the most recent successful
-    /// ``connect(transport:)``, in `tools/list` page order.
+    /// The tools discovered by the most recent successful
+    /// ``connect(transport:)`` call.
+    ///
+    /// Stored in `tools/list` page order.
     private var discoveredTools: [MCPTool] = []
 
     /// Incremented by every ``emitCatalogSnapshot()`` call — the per-server
@@ -197,9 +201,10 @@ public actor MCPServer {
     /// and is never reset for the life of this actor.
     private var catalogEpoch = 0
 
-    /// The stream of versioned ``ToolCatalog`` snapshots this server emits —
-    /// see ``emitCatalogSnapshot()`` for every point that yields to it:
-    /// a successful connect/reconnect, a failed reconnect, a mid-call
+    /// The stream of versioned ``ToolCatalog`` snapshots this server emits.
+    ///
+    /// See ``emitCatalogSnapshot()`` for every point that yields to it: a
+    /// successful connect/reconnect, a failed reconnect, a mid-call
     /// transport fault, and a coalesced `tools/list_changed` re-list (see
     /// ``coalesceAndRelist()``).
     ///
@@ -239,6 +244,18 @@ public actor MCPServer {
     /// ``handleToolListChangedNotification()`` against starting a second,
     /// redundant watcher while one is already running.
     private var isCoalescingToolListChanged = false
+
+    /// The task ``handleToolListChangedNotification()`` starts to run
+    /// ``coalesceAndRelist()``, or `nil` when no coalescing watcher is
+    /// currently running.
+    ///
+    /// Stored rather than left as a bare, unstored `Task { }` so this actor
+    /// holds a structured handle to its own background work instead of
+    /// leaking an unstructured task — cleared back to `nil` by
+    /// ``coalesceAndRelist()`` itself once it finishes. Nothing currently
+    /// needs to cancel it early, since ``isCoalescingToolListChanged``
+    /// already guards against starting a second one while it runs.
+    private var coalescingTask: Task<Void, Never>?
 
     /// How long a burst of `tools/list_changed` notifications must go quiet
     /// before ``coalesceAndRelist()`` performs the actual re-list — measured
@@ -377,11 +394,14 @@ public actor MCPServer {
         await client.disconnect()
     }
 
-    /// Connects with automatic retry: attempts ``connect(transport:)`` up to
-    /// `backoffPolicy.maxAttempts` times, each bounded by
-    /// `backoffPolicy.connectTimeout`, sleeping on ``clock`` for an
-    /// exponentially increasing delay (see ``BackoffPolicy``) between failed
-    /// attempts. Hard-fails only once every attempt is exhausted.
+    /// Connects with automatic retry using exponential backoff up to the
+    /// maximum number of attempts.
+    ///
+    /// Attempts ``connect(transport:)`` up to `backoffPolicy.maxAttempts`
+    /// times, each bounded by `backoffPolicy.connectTimeout`, sleeping on
+    /// ``clock`` for an exponentially increasing delay (see
+    /// ``BackoffPolicy``) between failed attempts. Hard-fails only once
+    /// every attempt is exhausted.
     ///
     /// Records `backoffPolicy` as ``activeBackoffPolicy`` up front, so a
     /// later mid-call transport fault (see ``call(toolNamed:arguments:)``)
@@ -449,12 +469,13 @@ public actor MCPServer {
         throw exhausted
     }
 
-    /// Calls a tool on the connected server and renders the result for the
-    /// model, mapping a mid-call transport fault to an `isError`-style
-    /// rendered result (via ``ToolContentRenderer``) instead of throwing or
-    /// hanging, and auto-reconnecting with ``activeBackoffPolicy`` as a side
-    /// effect — so the model can react to *this* call's failure while the
-    /// connection heals for the next one.
+    /// Calls a tool and renders the result for the model.
+    ///
+    /// Maps a mid-call transport fault to an `isError`-style rendered result
+    /// (via ``ToolContentRenderer``) instead of throwing or hanging, and
+    /// auto-reconnects with ``activeBackoffPolicy`` as a side effect — so the
+    /// model can react to *this* call's failure while the connection heals
+    /// for the next one.
     ///
     /// Never throws: a transport fault becomes rendered `isError` content,
     /// exactly like a server-reported `isError` result already is (see
@@ -480,10 +501,10 @@ public actor MCPServer {
         }
     }
 
-    /// Attempts to restore ``state`` to ``MCPServerState/ready`` after a
-    /// mid-call transport fault, using ``lastTransport`` and
-    /// ``activeBackoffPolicy`` — the "auto-reconnect" half of
-    /// ``call(toolNamed:arguments:)``.
+    /// Restores the server state to ready after a mid-call transport fault.
+    ///
+    /// Uses ``lastTransport`` and ``activeBackoffPolicy`` — the
+    /// "auto-reconnect" half of ``call(toolNamed:arguments:)``.
     ///
     /// Never throws: both the "no prior transport" case and a
     /// backoff-exhausted reconnect are logged and swallowed, leaving
@@ -507,8 +528,10 @@ public actor MCPServer {
         }
     }
 
-    /// The rendered-`isError` result ``call(toolNamed:arguments:)`` returns
-    /// in place of throwing when a mid-call transport fault occurs.
+    /// Returns the rendered error result for mid-call transport faults.
+    ///
+    /// This is what ``call(toolNamed:arguments:)`` returns in place of
+    /// throwing when a mid-call transport fault occurs.
     ///
     /// - Parameter error: The underlying transport error the call caught.
     /// - Returns: A `CallTool.Result` describing the fault, with `isError`
@@ -520,8 +543,10 @@ public actor MCPServer {
         )
     }
 
-    /// Runs one single-attempt connect, bounded by `timeout` measured
-    /// against real wall-clock time — never ``clock`` (see
+    /// Attempts a single connection bounded by the specified real
+    /// wall-clock timeout.
+    ///
+    /// Measured against real wall-clock time — never ``clock`` (see
     /// ``BackoffPolicy/connectTimeout``'s doc for why a per-attempt timeout
     /// is a real-time bound regardless of which clock paces the backoff
     /// delay between attempts).
@@ -579,11 +604,14 @@ public actor MCPServer {
         }
     }
 
-    /// Does the actual work of connecting — the shared body behind both
-    /// ``connect(transport:)`` and ``performConnectAttempt(transport:timeout:)``
-    /// — mutating ``state``/``identity``/``discoveredTools`` only if
-    /// `generation` still matches ``connectGeneration`` by the time this
-    /// call would apply its result.
+    /// Performs the actual connection work shared by both retry-based and
+    /// single-attempt connections.
+    ///
+    /// The shared body behind both ``connect(transport:)`` and
+    /// ``performConnectAttempt(transport:timeout:)``, mutating
+    /// ``state``/``identity``/``discoveredTools`` only if `generation`
+    /// still matches ``connectGeneration`` by the time this call would
+    /// apply its result.
     ///
     /// That guard matters only for a ``performConnectAttempt(transport:timeout:)``
     /// caller: a fresh, non-racing ``connect(transport:)`` call always
@@ -606,9 +634,7 @@ public actor MCPServer {
     ///   detached `Task` still observes failure vs. success correctly.
     private func applyConnect(transport: any Transport, generation: Int) async throws {
         guard generation == connectGeneration else {
-            logger.warning(
-                "MCPServer skipping a connect attempt already superseded by a newer one",
-                metadata: [Self.serverMetadataKey: "\(identityNameForDiagnostics)"])
+            logStaleGenerationDiscard("MCPServer skipping a connect attempt already superseded by a newer one")
             return
         }
         lastTransport = transport
@@ -624,9 +650,7 @@ public actor MCPServer {
             let initializeResult = try await client.connect(transport: transport)
             let tools = try await discoverAllTools()
             guard generation == connectGeneration else {
-                logger.warning(
-                    "MCPServer discarding a stale connect success — a newer attempt has since started",
-                    metadata: [Self.serverMetadataKey: "\(identityNameForDiagnostics)"])
+                logStaleGenerationDiscard("MCPServer discarding a stale connect success — a newer attempt has since started")
                 return
             }
             if identity == nil {
@@ -638,9 +662,8 @@ public actor MCPServer {
             emitCatalogSnapshot()
         } catch {
             guard generation == connectGeneration else {
-                logger.warning(
-                    "MCPServer discarding a stale connect failure — a newer attempt has since started",
-                    metadata: [Self.serverMetadataKey: "\(identityNameForDiagnostics)", Self.errorMetadataKey: "\(error)"])
+                logStaleGenerationDiscard(
+                    "MCPServer discarding a stale connect failure — a newer attempt has since started", error: error)
                 throw error
             }
             state = .faulted(String(describing: error))
@@ -649,8 +672,27 @@ public actor MCPServer {
         }
     }
 
-    /// Computes the exponential backoff delay to wait before the retry
-    /// attempt that follows `attempt`.
+    /// Logs that a connect attempt was discarded because a newer attempt
+    /// has since superseded it.
+    ///
+    /// Centralizes the logging shared by ``applyConnect(transport:generation:)``'s
+    /// three "stale generation" guards, which otherwise differ only in
+    /// `message` and whether an `error` is being discarded — the caller
+    /// still decides whether to `return` or `throw` afterward.
+    ///
+    /// - Parameters:
+    ///   - message: The log message describing which stale attempt this is.
+    ///   - error: The error being discarded, if any, included in the log
+    ///     metadata alongside `message`.
+    private func logStaleGenerationDiscard(_ message: Logger.Message, error: (any Error)? = nil) {
+        var metadata: Logger.Metadata = [Self.serverMetadataKey: "\(identityNameForDiagnostics)"]
+        if let error {
+            metadata[Self.errorMetadataKey] = "\(error)"
+        }
+        logger.warning(message, metadata: metadata)
+    }
+
+    /// Computes the exponential backoff delay for the next retry attempt.
     ///
     /// - Parameters:
     ///   - attempt: The 1-based attempt number that just failed.
@@ -693,8 +735,11 @@ public actor MCPServer {
         return discoveredTools
     }
 
-    /// The same tools as ``mcpTools()``, type-erased to
-    /// `FoundationModels.Tool` for direct use in a `LanguageModelSession`.
+    /// The discovered tools as `FoundationModels.Tool` values for use in a
+    /// session.
+    ///
+    /// Type-erased from ``mcpTools()`` for direct use in a
+    /// `LanguageModelSession`.
     ///
     /// - Returns: One `any FoundationModels.Tool` per discovered tool.
     /// - Throws: Whatever ``mcpTools()`` throws.
@@ -702,9 +747,12 @@ public actor MCPServer {
         try mcpTools().map { $0 as any FoundationModels.Tool }
     }
 
-    /// Resolves `name` against the **current** catalog — i.e. ``discoveredTools``
-    /// as of this call, not whatever catalog snapshot a caller last observed
-    /// from ``catalogUpdates``.
+    /// Resolves a tool name against the current catalog, returning nil if
+    /// not found.
+    ///
+    /// Resolves `name` against the **current** catalog — i.e.
+    /// ``discoveredTools`` as of this call, not whatever catalog snapshot a
+    /// caller last observed from ``catalogUpdates``.
     ///
     /// Unlike ``mcpTools()``, never throws ``MCPServerError/notReady(_:)``:
     /// a tool absent from the current catalog — whether because ``state``
@@ -720,9 +768,11 @@ public actor MCPServer {
         discoveredTools.first { $0.name == name }
     }
 
-    /// The current catalog snapshot: this server's ``identity``,
-    /// ``catalogEpoch``, ``state``, and every currently-discovered tool
-    /// converted to a ``ToolDescriptor``.
+    /// The current catalog snapshot with this server's identity, epoch,
+    /// state, and all discovered tools.
+    ///
+    /// Combines ``identity``, ``catalogEpoch``, ``state``, and every
+    /// currently-discovered tool converted to a ``ToolDescriptor``.
     ///
     /// Unlike ``mcpTools()``, whose ``MCPServerError/notReady(_:)`` guard is
     /// keyed on ``state`` being exactly ``MCPServerState/ready``, this
@@ -762,10 +812,13 @@ public actor MCPServer {
         )
     }
 
-    /// Increments ``catalogEpoch`` and yields a new ``ToolCatalog`` snapshot
-    /// on ``catalogUpdates``, if ``identity`` has been established — a
-    /// no-op before the first successful connect, since there is nothing yet
-    /// to snapshot.
+    /// Increments the epoch and emits a new catalog snapshot when the
+    /// server identity is established.
+    ///
+    /// Yields a new ``ToolCatalog`` snapshot on ``catalogUpdates`` with the
+    /// incremented ``catalogEpoch``, if ``identity`` has been established —
+    /// a no-op before the first successful connect, since there is nothing
+    /// yet to snapshot.
     ///
     /// The single emission point behind every ``catalogUpdates`` update: a
     /// successful connect/reconnect and a failed reconnect (both in
@@ -779,11 +832,13 @@ public actor MCPServer {
         catalogContinuation.yield(makeCatalogSnapshot(epoch: catalogEpoch, identity: identity))
     }
 
-    /// The rendered `isError` result text a caller should use once a
-    /// previously-resolved tool is no longer present in the current
-    /// catalog — e.g. removed by a coalesced `tools/list_changed` re-list
-    /// (``relistOnce()``) since the caller last resolved it via
-    /// ``tool(named:)``.
+    /// Returns the rendered error result text for when a
+    /// previously-resolved tool is no longer available.
+    ///
+    /// A caller should use this once a previously-resolved tool is no
+    /// longer present in the current catalog — e.g. removed by a coalesced
+    /// `tools/list_changed` re-list (``relistOnce()``) since the caller
+    /// last resolved it via ``tool(named:)``.
     ///
     /// - Parameter name: The name of the tool that is no longer available.
     /// - Returns: Rendered `isError` content, via ``ToolContentRenderer``,
@@ -804,12 +859,12 @@ public actor MCPServer {
         )
     }
 
-    /// Fetches every `tools/list` page, following `nextCursor` until the
-    /// server returns none, and maps each `MCP.Tool` into an ``MCPTool``.
+    /// Fetches all tool pages from the server via paginated `tools/list`.
     ///
-    /// A one-page read silently truncates whenever the server paginates its
-    /// `tools/list` response; this loop is what stands between callers and
-    /// that truncation.
+    /// Follows `nextCursor` until the server returns none, mapping each
+    /// `MCP.Tool` into an ``MCPTool``. A one-page read silently truncates
+    /// whenever the server paginates its `tools/list` response; this loop
+    /// is what stands between callers and that truncation.
     ///
     /// - Returns: One ``MCPTool`` per tool across every page, in page order.
     /// - Throws: Whatever `MCP.Client.listTools(cursor:)` throws, or
@@ -828,9 +883,10 @@ public actor MCPServer {
 
     // MARK: - Live catalog: coalesced tools/list_changed re-list
 
-    /// Registers the handler that routes every inbound
-    /// `notifications/tools/list_changed` notification to
-    /// ``handleToolListChangedNotification()`` — called exactly once per
+    /// Registers the notification handler for tool list changes.
+    ///
+    /// Routes every inbound `notifications/tools/list_changed` notification
+    /// to ``handleToolListChangedNotification()`` — called exactly once per
     /// ``MCPServer`` (see ``hasRegisteredToolListChangedHandler``), never on
     /// every reconnect.
     private func registerToolListChangedHandler() async {
@@ -853,9 +909,12 @@ public actor MCPServer {
         toolListChangedGeneration += 1
         guard !isCoalescingToolListChanged else { return }
         isCoalescingToolListChanged = true
-        Task { await self.coalesceAndRelist() }
+        coalescingTask = Task { await self.coalesceAndRelist() }
     }
 
+    /// Coalesces rapid tool list change notifications into a single
+    /// re-list.
+    ///
     /// Waits out ``toolListChangedCoalesceWindow`` once, then re-runs
     /// paginated `tools/list` discovery (``relistOnce()``) repeatedly until a
     /// full discovery round trip completes with no further notification
@@ -882,15 +941,19 @@ public actor MCPServer {
             lastRelistSucceeded = await relistOnce()
         } while observedGeneration != toolListChangedGeneration
         isCoalescingToolListChanged = false
+        coalescingTask = nil
         if lastRelistSucceeded {
             emitCatalogSnapshot()
         }
     }
 
-    /// Re-runs paginated `tools/list` discovery once and, on success,
-    /// replaces ``discoveredTools`` — the single discovery round trip
-    /// ``coalesceAndRelist()`` repeats until stable, emitting at most one
-    /// ``catalogUpdates`` snapshot itself once the whole burst has settled.
+    /// Re-runs tool discovery once and updates the discovered tools if
+    /// successful.
+    ///
+    /// On success, replaces ``discoveredTools`` — the single discovery round
+    /// trip ``coalesceAndRelist()`` repeats until stable, emitting at most
+    /// one ``catalogUpdates`` snapshot itself once the whole burst has
+    /// settled.
     ///
     /// A discovery failure is logged and otherwise swallowed, leaving
     /// ``discoveredTools`` and ``catalogEpoch`` exactly as they were: unlike
@@ -914,6 +977,9 @@ public actor MCPServer {
 
     // MARK: - Elicitation
 
+    /// Declares the elicitation capability and registers the request
+    /// handler.
+    ///
     /// Declares the elicitation client capability on ``client`` and
     /// registers the handler that routes every `elicitation/create` request
     /// to `coordinator` — the two "wire the actor" duties `plan.md`'s
@@ -946,9 +1012,10 @@ public actor MCPServer {
         }
     }
 
-    /// Routes one server-initiated `elicitation/create` request to
-    /// `coordinator`, enforcing the no-secrets-in-form-mode rule (see
-     /// ``Elicitation/RequestSchema/requiresURLModeRouting`` and
+    /// Routes a server-initiated elicitation request to the coordinator.
+    ///
+    /// Enforces the no-secrets-in-form-mode rule (see
+    /// ``Elicitation/RequestSchema/requiresURLModeRouting`` and
     /// ``ElicitationRouting``), and converts the coordinator's
     /// ``ElicitationResponse`` back into the `CreateElicitation.Result` the
     /// server expects.
@@ -992,10 +1059,13 @@ public actor MCPServer {
     }
 }
 
-/// Serializes exactly one resumption of a `CheckedContinuation` shared by
-/// two independent, un-joined `Task`s —
+/// Serializes the single resumption of a shared `CheckedContinuation`
+/// between two racing tasks.
+///
+/// The two tasks are
 /// ``MCPServer/performConnectAttempt(transport:timeout:)``'s connect
-/// attempt and its timeout — racing to finish first.
+/// attempt and its timeout, both independent and un-joined, racing to
+/// finish first.
 ///
 /// `CheckedContinuation.resume(with:)` traps if called more than once;
 /// this guards that with a `Mutex` so whichever task finishes first "wins"
@@ -1011,8 +1081,8 @@ private final class SingleResume<Value: Sendable>: Sendable {
         self.continuation = Mutex(continuation)
     }
 
-    /// Resumes the wrapped continuation with `result`, unless another call
-    /// already has — in which case this is a silent no-op.
+    /// Resumes the wrapped continuation with the result, or silently
+    /// ignores a duplicate resumption attempt.
     ///
     /// - Parameter result: The result (or error) to resume with.
     func resume(with result: Result<Value, any Error>) {

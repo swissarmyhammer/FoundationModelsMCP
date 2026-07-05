@@ -5,8 +5,10 @@ import Testing
 import MCP
 import MCPTestServer
 
-/// Coverage for the dynamic half of ``MCPServer``'s catalog: the
-/// ``MCPServer/catalogUpdates`` stream, coalescing a burst of
+/// Provides comprehensive coverage for the dynamic half of ``MCPServer``'s
+/// catalog.
+///
+/// Covers the ``MCPServer/catalogUpdates`` stream, coalescing a burst of
 /// `tools/list_changed` notifications into a single re-list, an implicit
 /// re-list on reconnect, and ``MCPServer/tool(named:)`` resolving against
 /// the current catalog.
@@ -18,16 +20,20 @@ import MCPTestServer
 @Suite("LiveCatalog")
 struct LiveCatalogTests {
 
-    /// Builds a fresh `MCP.Client` for one test, named after the test itself
-    /// only for readability in transport-level logs.
+    /// Builds a fresh `MCP.Client` for a test, with a descriptive name.
+    ///
+    /// Named after the test itself only for readability in transport-level
+    /// logs.
     private func makeClient() -> Client {
         Client(name: "LiveCatalogTestClient", version: "1.0")
     }
 
-    /// Collects every ``ToolCatalog`` snapshot observed from an
-    /// ``MCPServer/catalogUpdates`` stream, in emission order — the same
-    /// "record and poll with a bounded timeout" shape as
-    /// ``ScriptedServerSelfTests``'s own `NotificationCounter`/`ProgressRecorder`.
+    /// Collects every ``ToolCatalog`` snapshot observed from the server's
+    /// catalog updates stream.
+    ///
+    /// Records snapshots in emission order — the same "record and poll with
+    /// a bounded timeout" shape as ``ScriptedServerSelfTests``'s own
+    /// `NotificationCounter`/`ProgressRecorder`.
     private actor CatalogSnapshotRecorder {
         private(set) var snapshots: [ToolCatalog] = []
 
@@ -35,8 +41,8 @@ struct LiveCatalogTests {
             snapshots.append(snapshot)
         }
 
-        /// Polls until at least `count` snapshots have been recorded, or
-        /// `timeout` elapses.
+        /// Polls until at least the specified count of snapshots have been
+        /// recorded, or until the timeout elapses.
         ///
         /// - Parameters:
         ///   - count: The minimum number of snapshots to wait for.
@@ -52,8 +58,11 @@ struct LiveCatalogTests {
         }
     }
 
-    /// Starts a background task that appends every snapshot from `server`'s
-    /// ``MCPServer/catalogUpdates`` to a fresh ``CatalogSnapshotRecorder``.
+    /// Creates a background task that records all catalog update snapshots
+    /// from the server.
+    ///
+    /// Appends every snapshot from `server`'s ``MCPServer/catalogUpdates``
+    /// to a fresh ``CatalogSnapshotRecorder``.
     ///
     /// - Parameter server: The server to subscribe to.
     /// - Returns: The recorder, and the collecting task (cancel it once the
