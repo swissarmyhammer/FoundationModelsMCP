@@ -19,16 +19,17 @@ let foundationModelsLinkerSettings: [LinkerSetting] = [
 let mcpProduct: Target.Dependency = .product(name: "MCP", package: "swift-sdk")
 
 /// The shared dependency list for every `Examples/` executable target
-/// (`EchoTool`, `FileAssistant`, `ToolPicking`, `RemoteHTTP`): the shipped
+/// (`EchoTool`, `FileAssistant`, `ToolPicking`, `RemoteHTTP`,
+/// `ElicitingAgent`, `CatalogBrowser`, `DynamicToolset`): the shipped
 /// library, the shared ``mcpProduct``, and the `ExampleSupport` support
-/// library those four targets all depend on.
+/// library those seven targets all depend on.
 let exampleTargetDependencies: [Target.Dependency] = [
     "FoundationModelsMCP",
     "ExampleSupport",
     mcpProduct,
 ]
 
-/// The four `Examples/` executable targets (plan.md → Examples §1–4), all
+/// The seven `Examples/` executable targets (plan.md → Examples §1–7), all
 /// sharing the same dependencies, linker settings, and target shape —
 /// differing only in name and source path:
 ///
@@ -41,8 +42,16 @@ let exampleTargetDependencies: [Target.Dependency] = [
 ///   the same session, showing `MCPToolProvider` flattening.
 /// - `RemoteHTTP` (§4): `HTTPClientTransport` with a host-supplied bearer
 ///   token, demonstrating the delegated-auth decision.
+/// - `ElicitingAgent` (§5): both elicitation directions — a server tool that
+///   pauses mid-call with `elicitation/create`, and the model calling
+///   `MCPElicitationTool` — through one console `ElicitationCoordinator`.
+/// - `CatalogBrowser` (§6): connects one or more spawned servers and prints
+///   the full M8 catalog surface for every discovered tool.
+/// - `DynamicToolset` (§7): a spawned server that adds, removes, and
+///   re-schemas a tool on a timer; prints every `ToolCatalog` snapshot and
+///   demonstrates call-time resolution of a vanished tool.
 ///
-/// Expressed as a data table mapped into targets (rather than four
+/// Expressed as a data table mapped into targets (rather than seven
 /// hand-duplicated `.executableTarget()` blocks) so the shared shape can't
 /// drift out of lockstep as examples are added or renamed.
 let exampleTargetSpecs: [(name: String, path: String)] = [
@@ -50,9 +59,12 @@ let exampleTargetSpecs: [(name: String, path: String)] = [
     ("FileAssistant", "Examples/FileAssistant"),
     ("ToolPicking", "Examples/ToolPicking"),
     ("RemoteHTTP", "Examples/RemoteHTTP"),
+    ("ElicitingAgent", "Examples/ElicitingAgent"),
+    ("CatalogBrowser", "Examples/CatalogBrowser"),
+    ("DynamicToolset", "Examples/DynamicToolset"),
 ]
 
-/// The four `Examples/` executable targets, generated from `exampleTargetSpecs`.
+/// The seven `Examples/` executable targets, generated from `exampleTargetSpecs`.
 ///
 /// Maps each spec's name and path into an `.executableTarget()` sharing the
 /// common `exampleTargetDependencies` and `foundationModelsLinkerSettings`,
@@ -71,8 +83,9 @@ let exampleTargets: [Target] = exampleTargetSpecs.map { spec in
 /// (never a library dependency — see
 /// `Tests/FoundationModelsMCPTests/PackageDependencyTests.swift`) and its
 /// `MCPTestServerCLI` stdio wrapper, the `ExampleSupport` helper library, and
-/// the four `Examples/` executable targets (`EchoTool`, `FileAssistant`,
-/// `ToolPicking`, `RemoteHTTP`) documented in `plan.md`'s "Examples" section.
+/// the seven `Examples/` executable targets (`EchoTool`, `FileAssistant`,
+/// `ToolPicking`, `RemoteHTTP`, `ElicitingAgent`, `CatalogBrowser`,
+/// `DynamicToolset`) documented in `plan.md`'s "Examples" section.
 let package = Package(
     name: "FoundationModelsMCP",
     platforms: [
@@ -145,6 +158,7 @@ let package = Package(
                 "MCPTestServer",
                 "ExampleSupport",
                 "RemoteHTTP",
+                "ElicitingAgent",
                 mcpProduct,
             ],
             resources: [

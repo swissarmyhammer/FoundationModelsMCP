@@ -4,8 +4,8 @@ import MCP
 
 /// An ``MCPServer`` connected to a spawned ``ExampleServerProcess``, plus the
 /// process backing it — the "spawn `MCPTestServerCLI`, connect an
-/// `MCPServer`" pattern shared by `EchoTool`, `FileAssistant`, and
-/// `ToolPicking`.
+/// `MCPServer`" pattern shared by `EchoTool`, `FileAssistant`, `ToolPicking`,
+/// `ElicitingAgent`, `CatalogBrowser`, and `DynamicToolset`.
 public struct ConnectedExampleServer: Sendable {
     /// The connected server.
     public let server: MCPServer
@@ -31,13 +31,23 @@ public struct ConnectedExampleServer: Sendable {
 ///     ``ExampleServerProcess/spawn(mode:)``).
 ///   - clientName: The display name for the `MCP.Client` backing the
 ///     returned server.
+///   - elicitationCoordinator: The coordinator server-initiated
+///     `elicitation/create` requests are routed to, forwarded to
+///     `MCPServer.init(client:name:elicitationCoordinator:clock:defaultCallTimeout:logger:)`.
+///     Defaults to `nil` — no elicitation client capability declared — for
+///     every example that doesn't need it (`EchoTool`, `FileAssistant`,
+///     `ToolPicking`, `CatalogBrowser`, `DynamicToolset`); only
+///     `ElicitingAgent` supplies one.
 /// - Returns: The connected server and the process backing it, for a single
 ///   `defer { await connected.shutdown() }` at the call site.
 /// - Throws: Whatever ``ExampleServerProcess/spawn(mode:)`` or
 ///   `MCPServer.connect(transport:)` throws.
-public func connectExampleServer(mode: String, clientName: String) async throws -> ConnectedExampleServer {
+public func connectExampleServer(
+    mode: String, clientName: String, elicitationCoordinator: (any ElicitationCoordinator)? = nil
+) async throws -> ConnectedExampleServer {
     let process = try ExampleServerProcess.spawn(mode: mode)
-    let server = MCPServer(client: Client(name: clientName, version: "1.0"))
+    let server = MCPServer(
+        client: Client(name: clientName, version: "1.0"), elicitationCoordinator: elicitationCoordinator)
     try await server.connect(transport: process.transport)
     return ConnectedExampleServer(server: server, process: process)
 }
@@ -45,55 +55,65 @@ public func connectExampleServer(mode: String, clientName: String) async throws 
 /// Guards on `SystemLanguageModel` availability, then spawns and connects a
 /// ``ConnectedExampleServer`` — the "check the model is available, then
 /// spawn `MCPTestServerCLI` and connect" bootstrap shared by `EchoTool`,
-/// `FileAssistant`, and `ToolPicking`'s `main()` entry points.
+/// `FileAssistant`, `ToolPicking`, and `ElicitingAgent`'s `main()` entry
+/// points.
 ///
 /// - Parameters:
 ///   - exampleName: The example's display name, forwarded to
 ///     ``checkSystemLanguageModelAvailable(exampleName:isAvailable:)``.
 ///   - mode: The `ServerMode` raw value forwarded to
-///     ``connectExampleServer(mode:clientName:)``.
+///     ``connectExampleServer(mode:clientName:elicitationCoordinator:)``.
 ///   - clientName: The `MCP.Client` display name forwarded to
-///     ``connectExampleServer(mode:clientName:)``.
+///     ``connectExampleServer(mode:clientName:elicitationCoordinator:)``.
+///   - elicitationCoordinator: Forwarded to
+///     ``connectExampleServer(mode:clientName:elicitationCoordinator:)``.
+///     Defaults to `nil`.
 ///   - isAvailable: Whether the system language model is available. Defaults
 ///     to `SystemLanguageModel.default.isAvailable`; overridable so this
 ///     function is directly testable without a real model or subprocess.
 /// - Returns: The connected server, or `nil` (after printing a clean
 ///   message, never spawning a subprocess) if `isAvailable` is `false`.
-/// - Throws: Whatever ``connectExampleServer(mode:clientName:)`` throws.
+/// - Throws: Whatever ``connectExampleServer(mode:clientName:elicitationCoordinator:)``
+///   throws.
 public func requireExampleServer(
     exampleName: String,
     mode: String,
     clientName: String,
+    elicitationCoordinator: (any ElicitationCoordinator)? = nil,
     isAvailable: Bool = SystemLanguageModel.default.isAvailable
 ) async throws -> ConnectedExampleServer? {
     guard checkSystemLanguageModelAvailable(exampleName: exampleName, isAvailable: isAvailable) else {
         return nil
     }
-    return try await connectExampleServer(mode: mode, clientName: clientName)
+    return try await connectExampleServer(
+        mode: mode, clientName: clientName, elicitationCoordinator: elicitationCoordinator)
 }
 
 /// Runs `body` with a connected ``ConnectedExampleServer``, guarding on
 /// `SystemLanguageModel` availability first and always disconnecting and
 /// shutting down afterward — the full "check the model is available, spawn
 /// `MCPTestServerCLI` and connect, run the example, always tear down"
-/// bootstrap shared by `EchoTool`, `FileAssistant`, and `ToolPicking`'s
-/// `main()` entry points.
+/// bootstrap shared by `EchoTool`, `FileAssistant`, `ToolPicking`, and
+/// `ElicitingAgent`'s `main()` entry points.
 ///
 /// - Parameters:
 ///   - exampleName: Forwarded to
-///     ``requireExampleServer(exampleName:mode:clientName:isAvailable:)``.
+///     ``requireExampleServer(exampleName:mode:clientName:elicitationCoordinator:isAvailable:)``.
 ///   - mode: Forwarded to
-///     ``requireExampleServer(exampleName:mode:clientName:isAvailable:)``.
+///     ``requireExampleServer(exampleName:mode:clientName:elicitationCoordinator:isAvailable:)``.
 ///   - clientName: Forwarded to
-///     ``requireExampleServer(exampleName:mode:clientName:isAvailable:)``.
+///     ``requireExampleServer(exampleName:mode:clientName:elicitationCoordinator:isAvailable:)``.
+///   - elicitationCoordinator: Forwarded to
+///     ``requireExampleServer(exampleName:mode:clientName:elicitationCoordinator:isAvailable:)``.
+///     Defaults to `nil`.
 ///   - isAvailable: Whether the system language model is available. Defaults
 ///     to `SystemLanguageModel.default.isAvailable`; overridable so this
 ///     function is directly testable without a real model or subprocess.
 ///   - body: Run with the connected server once it's ready. Never invoked
 ///     (with no subprocess ever spawned) if `isAvailable` is `false`.
 /// - Throws: Whatever
-///   ``requireExampleServer(exampleName:mode:clientName:isAvailable:)`` or
-///   `body` throws.
+///   ``requireExampleServer(exampleName:mode:clientName:elicitationCoordinator:isAvailable:)``
+///   or `body` throws.
 ///
 /// `@MainActor`-isolated to match `@main` executable entry points' own
 /// isolation — every `Examples/` caller's `static func main()` runs on the
@@ -106,12 +126,14 @@ public func runExample(
     named exampleName: String,
     mode: String,
     clientName: String,
+    elicitationCoordinator: (any ElicitationCoordinator)? = nil,
     isAvailable: Bool = SystemLanguageModel.default.isAvailable,
     body: (ConnectedExampleServer) async throws -> Void
 ) async throws {
     guard
         let connected = try await requireExampleServer(
-            exampleName: exampleName, mode: mode, clientName: clientName, isAvailable: isAvailable)
+            exampleName: exampleName, mode: mode, clientName: clientName,
+            elicitationCoordinator: elicitationCoordinator, isAvailable: isAvailable)
     else {
         return
     }

@@ -82,4 +82,29 @@ struct ServerModeTests {
             Set(try await registeredToolNames(on: server))
                 == Set(["echo", "list_files", "read_file", "write_file"]))
     }
+
+    @Test(".eliciting registers only the elicit-on-command tool, under ServerMode.elicitOnCommandToolName")
+    func elicitingModeRegistersOnlyElicitOnCommandTool() async throws {
+        let server = ScriptedServer(name: "mode-test")
+        await ServerMode.eliciting.registerTools(on: server)
+
+        #expect(try await registeredToolNames(on: server) == [ServerMode.elicitOnCommandToolName])
+    }
+
+    @Test(".catalog registers only the catalog showcase tool")
+    func catalogModeRegistersOnlyShowcaseTool() async throws {
+        let server = ScriptedServer(name: "mode-test")
+        await ServerMode.catalog.registerTools(on: server)
+
+        #expect(try await registeredToolNames(on: server) == ["weather_lookup"])
+    }
+
+    @Test(".dynamic registers the initial re-schemad tool up front")
+    func dynamicModeRegistersInitialTool() async throws {
+        let server = ScriptedServer(name: "mode-test")
+        await ServerMode.dynamic.registerTools(on: server)
+
+        #expect(
+            try await registeredToolNames(on: server) == [ScriptedServer.dynamicToolsetReschemadToolName])
+    }
 }

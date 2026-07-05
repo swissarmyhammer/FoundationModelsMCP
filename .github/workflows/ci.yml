@@ -34,6 +34,9 @@ jobs:
           swift build --target FileAssistant
           swift build --target ToolPicking
           swift build --target RemoteHTTP
+          swift build --target ElicitingAgent
+          swift build --target CatalogBrowser
+          swift build --target DynamicToolset
 
       - name: Test
         run: swift test

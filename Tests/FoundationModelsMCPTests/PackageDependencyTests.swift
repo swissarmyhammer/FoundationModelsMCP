@@ -155,8 +155,13 @@ struct PackageDependencyTests {
         // instead of to an individual target. This checks the constant's own
         // declaration directly, closing that gap.
         let source = try String(contentsOf: Self.packageManifestURL, encoding: .utf8)
+        // Anchor past the `[Target.Dependency]` type annotation's own closing
+        // bracket by searching for a closing bracket at the start of its own
+        // line (matching `exampleTargetSpecsDeclaresExpectedNames()`'s
+        // pattern below) rather than a bare "]", which would match the type
+        // annotation's bracket first and never inspect the array body.
         guard let constantStart = source.range(of: "let exampleTargetDependencies"),
-            let closingBracket = source[constantStart.upperBound...].range(of: "]")
+            let closingBracket = source[constantStart.upperBound...].range(of: "\n]")
         else {
             Issue.record("Could not locate the exampleTargetDependencies constant in Package.swift")
             return
@@ -166,14 +171,15 @@ struct PackageDependencyTests {
         #expect(!constantDeclaration.contains("MCPTestServer"))
     }
 
-    /// The four `Examples/` executable targets generated from
-    /// `exampleTargetSpecs` (rather than four hand-duplicated
+    /// The seven `Examples/` executable targets generated from
+    /// `exampleTargetSpecs` (rather than seven hand-duplicated
     /// `.executableTarget()` blocks — see `Package.swift`).
     private static let generatedExampleTargetNames = [
         "EchoTool", "FileAssistant", "ToolPicking", "RemoteHTTP",
+        "ElicitingAgent", "CatalogBrowser", "DynamicToolset",
     ]
 
-    @Test("exampleTargetSpecs declares exactly the four generated Examples/ targets")
+    @Test("exampleTargetSpecs declares exactly the seven generated Examples/ targets")
     func exampleTargetSpecsDeclaresExpectedNames() throws {
         let source = try String(contentsOf: Self.packageManifestURL, encoding: .utf8)
         guard let specsStart = source.range(of: "let exampleTargetSpecs"),
