@@ -71,7 +71,7 @@ struct E2ETests {
         ),
         .enabled(
             if: Self.modelAvailabilityGatePasses,
-            "SystemLanguageModel is unavailable on this host (see SystemLanguageModel.default.availability); this test requires an on-device Apple Intelligence model."
+            "SystemLanguageModel is unavailable on this host (see SystemLanguageModel.default.isAvailable); this test requires an on-device Apple Intelligence model."
         )
     )
     func systemModelCallsRealToolThroughStdioServer() async throws {
