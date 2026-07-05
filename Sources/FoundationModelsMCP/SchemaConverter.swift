@@ -635,22 +635,6 @@ public enum SchemaConverter {
         return int
     }
 
-    /// JSON Schema `enum` values are not necessarily strings; render any scalar to its string form so `enum: [1, 2, 3]` still produces sensible choices.
-    ///
-    /// Non-scalar enum values (nested arrays/objects) are dropped rather than guessed at.
-    ///
-    /// - Parameter value: The raw `enum` array element to render.
-    /// - Returns: The value's string form, or `nil` if it is not a scalar (string/int/double/bool).
-    private static func scalarString(_ value: Value) -> String? {
-        switch value {
-        case .string(let string): return string
-        case .int(let int): return String(describing: int)
-        case .double(let double): return String(describing: double)
-        case .bool(let bool): return String(describing: bool)
-        default: return nil
-        }
-    }
-
     /// MCP 2025-11-25 targets JSON Schema 2020-12, whose default `$ref` anchor for a top-level `$defs` entry is `#/$defs/<name>`; the legacy `#/definitions/<name>` form (see `definitionsContainerKeys`) is recognized alongside it.
     ///
     /// - Parameter reference: The raw `$ref` string value from a schema node.

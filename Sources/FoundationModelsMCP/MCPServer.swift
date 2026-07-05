@@ -171,7 +171,7 @@ private struct ActiveCall {
 
     /// This call's resettable timeout deadline, reset by every
     /// `notifications/progress` for it (see
-    /// ``MCPServer/handleProgressNotification(_:)``).
+    /// ``MCPServer/handleProgressNotification(parameters:)``).
     var deadline: CallDeadline
 }
 
@@ -281,7 +281,7 @@ public actor MCPServer {
     ///   only one concurrent consumer should iterate this stream at a time.
     public let progressUpdates: AsyncStream<CallProgress>
 
-    /// The continuation `handleProgressNotification(_:)` yields new
+    /// The continuation `handleProgressNotification(parameters:)` yields new
     /// updates to — paired with ``progressUpdates`` once, at construction
     /// time.
     private let progressContinuation: AsyncStream<CallProgress>.Continuation
@@ -293,7 +293,7 @@ public actor MCPServer {
 
     /// Bookkeeping for every ``call(toolNamed:arguments:timeout:)`` current
     /// in flight, keyed by the `ProgressToken` that call generated —
-    /// looked up by `handleProgressNotification(_:)` to reset the right
+    /// looked up by `handleProgressNotification(parameters:)` to reset the right
     /// call's timeout deadline and to attribute a ``CallProgress`` update to
     /// its tool name.
     private var activeCalls: [ProgressToken: ActiveCall] = [:]
@@ -575,7 +575,7 @@ public actor MCPServer {
     ///
     /// Attaches a fresh `ProgressToken` to the call's `_meta` so incoming
     /// `notifications/progress` for it can be routed to ``progressUpdates``
-    /// and reset its timeout (see `handleProgressNotification(_:)`), races
+    /// and reset its timeout (see `handleProgressNotification(parameters:)`), races
     /// the call's own response against a resettable `timeout` (defaulting to
     /// `defaultCallTimeout`), and cooperates with Swift `Task`
     /// cancellation: cancelling the `Task` this call runs in sends a
@@ -672,7 +672,7 @@ public actor MCPServer {
     /// increments (`Task.sleep(for:)` — deliberately never `clock`; see
     /// `clock`'s own doc comment for why), comparing ``ActiveCall/deadline``'s
     /// ``CallDeadline/resetCount`` before and after each sleep to detect
-    /// whether `handleProgressNotification(_:)` reset the deadline while
+    /// whether `handleProgressNotification(parameters:)` reset the deadline while
     /// it slept — see ``CallDeadline`` for why that comparison, not a
     /// literal clock-instant deadline, is what makes this loop's logic
     /// unit-testable in isolation. If the timeout wins, explicitly cancels
@@ -719,7 +719,7 @@ public actor MCPServer {
     }
 
     /// Sleeps in real-wall-clock `timeout` increments until a full interval
-    /// elapses with no `handleProgressNotification(_:)` reset, returning
+    /// elapses with no `handleProgressNotification(parameters:)` reset, returning
     /// ``CallOutcome/timedOut`` once that happens.
     ///
     /// Pulled out of ``resultOrTimeout(toolName:context:progressToken:timeout:)``'s
@@ -939,7 +939,7 @@ public actor MCPServer {
     ///   detached `Task` still observes failure vs. success correctly.
     private func applyConnect(transport: any Transport, generation: Int) async throws {
         guard generation == connectGeneration else {
-            logStaleGenerationDiscard("MCPServer skipping a connect attempt already superseded by a newer one")
+            logStaleGenerationDiscard(message: "MCPServer skipping a connect attempt already superseded by a newer one")
             return
         }
         lastTransport = transport
@@ -959,7 +959,7 @@ public actor MCPServer {
             let initializeResult = try await client.connect(transport: transport)
             let tools = try await discoverAllTools()
             guard generation == connectGeneration else {
-                logStaleGenerationDiscard("MCPServer discarding a stale connect success — a newer attempt has since started")
+                logStaleGenerationDiscard(message: "MCPServer discarding a stale connect success — a newer attempt has since started")
                 return
             }
             if identity == nil {
@@ -972,7 +972,7 @@ public actor MCPServer {
         } catch {
             guard generation == connectGeneration else {
                 logStaleGenerationDiscard(
-                    "MCPServer discarding a stale connect failure — a newer attempt has since started", error: error)
+                    message: "MCPServer discarding a stale connect failure — a newer attempt has since started", error: error)
                 throw error
             }
             state = .faulted(String(describing: error))
@@ -993,7 +993,7 @@ public actor MCPServer {
     ///   - message: The log message describing which stale attempt this is.
     ///   - error: The error being discarded, if any, included in the log
     ///     metadata alongside `message`.
-    private func logStaleGenerationDiscard(_ message: Logger.Message, error: (any Error)? = nil) {
+    private func logStaleGenerationDiscard(message: Logger.Message, error: (any Error)? = nil) {
         var metadata: Logger.Metadata = [Self.serverMetadataKey: "\(identityNameForDiagnostics)"]
         if let error {
             metadata[Self.errorMetadataKey] = "\(error)"
@@ -1192,13 +1192,13 @@ public actor MCPServer {
     /// Registers the notification handler for `notifications/progress`.
     ///
     /// Routes every inbound progress notification to
-    /// `handleProgressNotification(_:)` — called exactly once per
+    /// `handleProgressNotification(parameters:)` — called exactly once per
     /// ``MCPServer`` (see ``hasRegisteredProgressHandler``), never on every
     /// reconnect, mirroring ``registerToolListChangedHandler()``.
     private func registerProgressHandler() async {
         await client.onNotification(ProgressNotification.self) { [weak self] message in
             guard let self else { return }
-            await self.handleProgressNotification(message.params)
+            await self.handleProgressNotification(parameters: message.params)
         }
     }
 
@@ -1211,7 +1211,7 @@ public actor MCPServer {
     ///
     /// - Parameter parameters: The inbound `notifications/progress`
     ///   payload.
-    private func handleProgressNotification(_ parameters: ProgressNotification.Parameters) {
+    private func handleProgressNotification(parameters: ProgressNotification.Parameters) {
         guard var activeCall = activeCalls[parameters.progressToken] else { return }
         activeCall.deadline.resetForProgress()
         activeCalls[parameters.progressToken] = activeCall
@@ -1350,7 +1350,7 @@ public actor MCPServer {
         coordinator: any ElicitationCoordinator
     ) async {
         await client.withElicitationHandler { parameters in
-            await Self.answerElicitation(parameters, coordinator: coordinator)
+            await Self.answerElicitation(parameters: parameters, coordinator: coordinator)
         }
     }
 
@@ -1370,7 +1370,7 @@ public actor MCPServer {
     /// - Returns: The `CreateElicitation.Result` reporting the user's
     ///   action.
     private static func answerElicitation(
-        _ parameters: CreateElicitation.Parameters,
+        parameters: CreateElicitation.Parameters,
         coordinator: any ElicitationCoordinator
     ) async -> CreateElicitation.Result {
         let response: ElicitationResponse

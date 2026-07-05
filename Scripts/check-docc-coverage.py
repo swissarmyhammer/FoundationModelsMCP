@@ -25,6 +25,10 @@ Usage:
 
 import sys
 
+# Prefix used on every message this script prints, so failures are easy to
+# grep for in CI logs and trace back to this script.
+SCRIPT_PREFIX = "check-docc-coverage: "
+
 # Kinds DocC synthesizes with no corresponding declaration in this package's
 # own source to attach a doc comment to:
 #
@@ -92,6 +96,15 @@ def parse_rows(text):
 
 
 def is_allowlisted(kind, path):
+    """Check whether a (kind, reference_path) pair needs no documentation.
+
+    Returns True if `kind` is one of `UNFIXABLE_KINDS` (a DocC-synthesized
+    grouping with no source declaration to attach a doc comment to), or if
+    `path` contains the suffix of one of the specific compiler/framework-
+    synthesized members listed in `UNFIXABLE_MEMBER_SUFFIXES`. Otherwise
+    returns False, meaning the symbol is expected to carry its own `///`
+    doc-comment abstract.
+    """
     if kind in UNFIXABLE_KINDS:
         return True
     for allowed_kind, suffix in UNFIXABLE_MEMBER_SUFFIXES:
@@ -111,7 +124,7 @@ def main():
     rows = list(parse_rows(text))
     if not rows:
         print(
-            "check-docc-coverage: no detailed-table rows parsed from "
+            f"{SCRIPT_PREFIX}no detailed-table rows parsed from "
             f"{sys.argv[1]!r} — the report format may have changed; "
             "update this script's parser.",
             file=sys.stderr,
@@ -126,7 +139,7 @@ def main():
 
     if undocumented:
         print(
-            f"check-docc-coverage: {len(undocumented)} public symbol(s) "
+            f"{SCRIPT_PREFIX}{len(undocumented)} public symbol(s) "
             "are missing a documentation abstract:",
             file=sys.stderr,
         )
@@ -134,7 +147,7 @@ def main():
             print(f"  {kind}: {name} ({path})", file=sys.stderr)
         return 1
 
-    print(f"check-docc-coverage: OK — {len(rows)} symbols checked, none undocumented outside the allowlist.")
+    print(f"{SCRIPT_PREFIX}OK — {len(rows)} symbols checked, none undocumented outside the allowlist.")
     return 0
 
 

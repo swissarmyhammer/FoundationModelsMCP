@@ -14,10 +14,11 @@ import MCP
 /// link is never fetched to learn more about it.
 public enum ToolContentRenderer {
 
-    /// The default render budget, in characters: the maximum length of any
-    /// single rendered text unit — a `.text`/`.resource` content item's text,
-    /// or `structuredContent`'s JSON — before `trimmed(text:budget:)` elides
-    /// its middle.
+    /// The maximum character count for any single rendered text unit before trimming.
+    ///
+    /// A `.text`/`.resource` content item's text, or `structuredContent`'s
+    /// JSON, is elided by `trimmed(text:budget:)` once it exceeds this
+    /// default render budget.
     ///
     /// Tool results are the context-window cost, not the model's own output,
     /// so a single oversized result must not be allowed to dominate a
@@ -154,9 +155,9 @@ public enum ToolContentRenderer {
 
     // MARK: - Bounded output / render budget
 
-    /// Trims `text` to `budget` characters, replacing an elided middle
-    /// section with a marker that names exactly how many characters were
-    /// removed.
+    /// Trims text to a budget by replacing the middle with an elision marker.
+    ///
+    /// The marker names exactly how many characters were removed.
     ///
     /// `text` at or under `budget` characters is returned unchanged, byte
     /// for byte — trimming never touches an already-in-budget result. An
@@ -215,6 +216,8 @@ public enum ToolContentRenderer {
 
     // MARK: - structuredContent + outputSchema validation
 
+    /// Renders and validates structured content as sorted-key JSON.
+    ///
     /// Renders `structuredContent` as sorted-key JSON, trimmed to `budget`,
     /// under a `"Structured result:"` header, then — when `outputSchema` is
     /// supplied — validates the **untrimmed** value against the **pinned
@@ -248,8 +251,9 @@ public enum ToolContentRenderer {
         return lines.joined(separator: "\n")
     }
 
-    /// Renders a `Value` as sorted-key JSON text, for deterministic,
-    /// diffable output.
+    /// Renders a Value as sorted-key JSON text with deterministic output.
+    ///
+    /// The sorted keys make the result diffable across runs.
     ///
     /// Not `private`: ``MCPElicitationTool`` reuses this exact rendering —
     /// sorted-key JSON with a `description`-based fallback — for its own
@@ -265,8 +269,9 @@ public enum ToolContentRenderer {
         return string
     }
 
-    /// Validates `value` against `schema` using a **pinned shallow subset**
-    /// of JSON Schema — this is *not* a full JSON Schema validator.
+    /// Validates a value against a pinned shallow subset of JSON Schema.
+    ///
+    /// This is *not* a full JSON Schema validator.
     ///
     /// Exactly four checks are performed:
     ///
@@ -393,9 +398,9 @@ public enum ToolContentRenderer {
         validateProperties(objectFields: objectFields, against: schemaFields) {
             propertyName, propertyValue, propertySchemaFields in
             guard case .array(let enumValues)? = propertySchemaFields["enum"],
-                let actual = scalarString(value: propertyValue)
+                let actual = scalarString(propertyValue)
             else { return nil }
-            let allowed = enumValues.compactMap { scalarString(value: $0) }
+            let allowed = enumValues.compactMap(scalarString)
             guard !allowed.contains(actual) else { return nil }
             return "property \"\(propertyName)\" value \"\(actual)\" is not one of \(allowed)"
         }
@@ -492,18 +497,4 @@ public enum ToolContentRenderer {
         ("object", { $0.objectValue != nil }),
     ]
 
-    /// Renders any scalar `Value` (string/int/double/bool) to its string
-    /// form, for `enum` membership comparison.
-    ///
-    /// Non-scalar values (array/object/null/data) have no defined enum
-    /// representation and return `nil`.
-    private static func scalarString(value: Value) -> String? {
-        switch value {
-        case .string(let string): return string
-        case .int(let int): return String(describing: int)
-        case .double(let double): return String(describing: double)
-        case .bool(let bool): return String(describing: bool)
-        default: return nil
-        }
-    }
 }

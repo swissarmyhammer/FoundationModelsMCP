@@ -30,6 +30,31 @@ comments:
 
     Task complete and green. Leaving in `doing` per /implement process for /review to pick up.
   timestamp: 2026-07-05T06:36:38.655710+00:00
+- actor: claude-code
+  id: 01kwrhkvp2jm1h59xm4ptdx34a
+  text: |-
+    Fixed all 16 review findings from the 2026-07-05 01:42 checklist:
+
+    1-2. Scripts/check-docc-coverage.py: added a docstring to is_allowlisted(); extracted the repeated "check-docc-coverage: " literal to a module-level SCRIPT_PREFIX constant used at all 3 print sites.
+
+    3-6. Added explicit labels to 4 unlabeled first parameters and updated every call site (verified via grep, no stragglers left):
+    - MCPElicitationTool.stringArray(_:) -> stringArray(value:) — 6 call sites in makeRequestSchema updated.
+    - MCPServer.logStaleGenerationDiscard(_:error:) -> logStaleGenerationDiscard(message:error:) — 3 call sites updated.
+    - MCPServer.handleProgressNotification(_:) -> handleProgressNotification(parameters:) — 1 call site plus 7 doc-comment cross-references (`handleProgressNotification(_:)` -> `handleProgressNotification(parameters:)`) updated via sed across the file.
+    - MCPServer.answerElicitation(_:coordinator:) -> answerElicitation(parameters:coordinator:) — 1 call site updated.
+
+    7-14 (Group 3, 6 doc-comment fixes). Restructured first lines to be complete, period-terminated sentences followed by a blank `///` line before elaboration, in: MCPToolProvider.swift (protocol doc), and ToolContentRenderer.swift's defaultRenderBudget, trimmed(text:budget:), renderStructuredContent, jsonString(for:), and validate(value:against:).
+
+    15-16 (Group 4). Extracted the verbatim-duplicated `scalarString` function out of SchemaConverter.swift and ToolContentRenderer.swift into one shared free function in a new file Sources/FoundationModelsMCP/Value+ScalarString.swift. Both files are in the same FoundationModelsMCP module so no import was needed — just deleted both private copies and updated the 3 call sites (SchemaConverter's `enumValues.compactMap(scalarString)` needed no change since it already used a bare function reference; ToolContentRenderer's two `scalarString(value:)` labeled calls became `scalarString(_:)`/bare compactMap references).
+
+    Verification, all fresh and green:
+    - swift build: 0 warnings, exit 0.
+    - swift test: 222/222 tests passed, 23 suites.
+    - swift package generate-documentation --target FoundationModelsMCP --warnings-as-errors: exit 0, 0 warnings.
+    - python3 Scripts/check-docc-coverage.py against a freshly regenerated --experimental-documentation-coverage report: OK, 202 symbols checked, 0 outside the allowlist — identical count to before these fixes, confirming no coverage regression.
+
+    All 16 checklist items marked [x] on the task description. Leaving in `doing` per /implement process for /review to pick back up.
+  timestamp: 2026-07-05T07:06:50.946899+00:00
 depends_on:
 - 01KWMS3F3P3HHZ56C1FK7S44DQ
 - 01KWMS37EXGG7KRM8YN8ABXV7R
@@ -37,84 +62,4 @@ position_column: doing
 position_ordinal: '80'
 title: DocC documentation + README
 ---
-## What
-Author the public documentation: a DocC catalog for the `FoundationModelsMCP` module covering every public symbol (MCPServer, MCPTool, MCPToolProvider, SchemaConverter behavior/fallbacks, ToolContentRenderer contract, ElicitationCoordinator, the frozen catalog surface) plus articles for the consumer contract (Multitool) and the enforcement model (declare vs. enforce). Write `README.md` with a quick-start whose code is the EchoTool example (kept compiling by referencing the example target), the dependency statement (swift-sdk + FoundationModels only), and pointers to Multitool/Router for search.
-
-- [x] DocC catalog; no undocumented public symbols
-- [x] Articles: catalog consumer contract, enforcement model
-- [x] README with EchoTool quick-start + scope/dependency statement
-
-## Acceptance Criteria
-- [x] DocC build succeeds in CI with zero missing-documentation warnings for public symbols
-- [x] README quick-start code is the EchoTool source (or verbatim excerpt) so it cannot rot silently
-
-## Tests
-- [x] CI step: `swift package generate-documentation` (or xcodebuild docbuild) succeeds
-- [x] CI step asserts README's swift snippet matches the EchoTool example source (simple diff check script)
-
-## Workflow
-- Use `/tdd` — write failing tests first, then implement to make them pass.
-
-## Implementation notes (2026-07-05)
-
-- Added `swift-docc-plugin` (1.5.0) as a package dependency. It is a
-  documentation-build-only tool dependency — never imported by any target,
-  never linked into a consumer of the library — so it does not change the
-  "swift-sdk + FoundationModels only" runtime dependency statement.
-- DocC catalog: `Sources/FoundationModelsMCP/FoundationModelsMCP.docc/` —
-  top-level `FoundationModelsMCP.md` (curated Topics over every public
-  symbol) plus three articles: `GettingStarted.md`, `EnforcementModel.md`
-  (the declare-vs-enforce model), and `CatalogConsumerContract.md`
-  (converted from the old `docs/catalog-consumer-contract.md`, which is now
-  a short pointer stub rather than a duplicate).
-- Fixed ~90 pre-existing broken `` ``symbol`` `` doc-comment cross-references
-  across MCPServer.swift, MCPTool.swift, MCPElicitationTool.swift,
-  ElicitationCoordinator.swift, MCPToolProvider.swift, SchemaConverter.swift,
-  and ToolContentRenderer.swift — stale signatures (e.g. `init(client:name:)`
-  → the real 6-parameter initializer) were corrected to real resolvable
-  double-backtick links; references to private/internal members or external
-  (MCP/FoundationModels module) types were converted to plain single-backtick
-  code font, since DocC's single-target symbol graph can't/shouldn't resolve
-  those as links.
-- Package.swift gotcha found and documented in-line: the `.docc` catalog must
-  be declared via `resources: [.copy("FoundationModelsMCP.docc")]`, not
-  `exclude:` — `exclude` silences the "unhandled file" SwiftPM warning but
-  also hides the catalog from swift-docc-plugin's own discovery, silently
-  dropping all three articles from the generated archive. Confirmed both ways
-  before settling on `.copy`.
-- **Coverage-gate correction (found by adversarial double-check, round 1):**
-  `swift package generate-documentation --warnings-as-errors` does **not**
-  catch missing documentation on a public symbol — DocC has no
-  "undocumented symbol" warning class at all, only genuine diagnostics
-  (broken links, malformed directives). Verified directly. The actual
-  enforcement for "zero missing-documentation warnings for public symbols"
-  is `Scripts/check-docc-coverage.py`, run in CI against
-  `--experimental-documentation-coverage --coverage-summary-level detailed`
-  output (the only DocC facility that reports missing docs, though its own
-  exit code ignores coverage). The script allowlists exactly the
-  kinds/members DocC synthesizes with no source location to attach a `///`
-  comment to (protocol-conformance "Implementations" pages, extended-external-
-  module containers, prose articles, Equatable's `!=`, Actor's 4 isolation-
-  check defaults, `Error.localizedDescription`, `Tool`'s synthesized
-  `SessionProperty`) and fails on anything else — verified to genuinely catch
-  a stripped doc comment as a regression. Also added doc comments to 3 of our
-  own `extension` declarations (on `MCP.Client`, `Elicitation.RequestSchema`,
-  `LanguageModelSession`) that were missing an abstract on the `extension`
-  line itself.
-- `README.md` quick-start embeds `Examples/EchoTool/EchoTool.swift` verbatim
-  between `<!-- ECHOTOOL-SNIPPET:START/END -->` HTML-comment markers.
-  `Tests/FoundationModelsMCPTests/ReadmeQuickStartTests.swift` extracts that
-  span and asserts it's character-for-character identical to the source
-  file. Verified as a genuine red→green cycle, including drift-detection.
-- `docs/swift-sdk-notes.md`'s "No other external dependencies" section was
-  already stale before this task; corrected and noted swift-docc-plugin's
-  build-tool-only status.
-
-All verification commands green (re-verified after reconstructing a file
-that an adversarial reviewer's own `git checkout --` cleanup accidentally
-reverted — see comments): `swift build` (0 warnings), `swift build --target
-<Name>` for all 7 Examples, `swift test` (222/222 tests, 23 suites),
-`swift package generate-documentation --target FoundationModelsMCP
---warnings-as-errors` (exit 0, 0 warnings), and
-`python3 Scripts/check-docc-coverage.py` against the coverage report (OK,
-202 symbols, 0 outside the allowlist).
+## What\nAuthor the public documentation: a DocC catalog for the `FoundationModelsMCP` module covering every public symbol (MCPServer, MCPTool, MCPToolProvider, SchemaConverter behavior/fallbacks, ToolContentRenderer contract, ElicitationCoordinator, the frozen catalog surface) plus articles for the consumer contract (Multitool) and the enforcement model (declare vs. enforce). Write `README.md` with a quick-start whose code is the EchoTool example (kept compiling by referencing the example target), the dependency statement (swift-sdk + FoundationModels only), and pointers to Multitool/Router for search.\n\n- [x] DocC catalog; no undocumented public symbols\n- [x] Articles: catalog consumer contract, enforcement model\n- [x] README with EchoTool quick-start + scope/dependency statement\n\n## Acceptance Criteria\n- [x] DocC build succeeds in CI with zero missing-documentation warnings for public symbols\n- [x] README quick-start code is the EchoTool source (or verbatim excerpt) so it cannot rot silently\n\n## Tests\n- [x] CI step: `swift package generate-documentation` (or xcodebuild docbuild) succeeds\n- [x] CI step asserts README's swift snippet matches the EchoTool example source (simple diff check script)\n\n## Workflow\n- Use `/tdd` — write failing tests first, then implement to make them pass.\n\n## Implementation notes (2026-07-05)\n\n- Added `swift-docc-plugin` (1.5.0) as a package dependency. It is a\n  documentation-build-only tool dependency — never imported by any target,\n  never linked into a consumer of the library — so it does not change the\n  "swift-sdk + FoundationModels only" runtime dependency statement.\n- DocC catalog: `Sources/FoundationModelsMCP/FoundationModelsMCP.docc/` —\n  top-level `FoundationModelsMCP.md` (curated Topics over every public\n  symbol) plus three articles: `GettingStarted.md`, `EnforcementModel.md`\n  (the declare-vs-enforce model), and `CatalogConsumerContract.md`\n  (converted from the old `docs/catalog-consumer-contract.md`, which is now\n  a short pointer stub rather than a duplicate).\n- Fixed ~90 pre-existing broken `` ``symbol`` `` doc-comment cross-references\n  across MCPServer.swift, MCPTool.swift, MCPElicitationTool.swift,\n  ElicitationCoordinator.swift, MCPToolProvider.swift, SchemaConverter.swift,\n  and ToolContentRenderer.swift — stale signatures (e.g. `init(client:name:)`\n  → the real 6-parameter initializer) were corrected to real resolvable\n  double-backtick links; references to private/internal members or external\n  (MCP/FoundationModels module) types were converted to plain single-backtick\n  code font, since DocC's single-target symbol graph can't/shouldn't resolve\n  those as links.\n- Package.swift gotcha found and documented in-line: the `.docc` catalog must\n  be declared via `resources: [.copy("FoundationModelsMCP.docc")]`, not\n  `exclude:` — `exclude` silences the "unhandled file" SwiftPM warning but\n  also hides the catalog from swift-docc-plugin's own discovery, silently\n  dropping all three articles from the generated archive. Confirmed both ways\n  before settling on `.copy`.\n- **Coverage-gate correction (found by adversarial double-check, round 1):**\n  `swift package generate-documentation --warnings-as-errors` does **not**\n  catch missing documentation on a public symbol — DocC has no\n  "undocumented symbol" warning class at all, only genuine diagnostics\n  (broken links, malformed directives). Verified directly. The actual\n  enforcement for "zero missing-documentation warnings for public symbols"\n  is `Scripts/check-docc-coverage.py`, run in CI against\n  `--experimental-documentation-coverage --coverage-summary-level detailed`\n  output (the only DocC facility that reports missing docs, though its own\n  exit code ignores coverage). The script allowlists exactly the\n  kinds/members DocC synthesizes with no source location to attach a `///`\n  comment to (protocol-conformance "Implementations" pages, extended-external-\n  module containers, prose articles, Equatable's `!=`, Actor's 4 isolation-\n  check defaults, `Error.localizedDescription`, `Tool`'s synthesized\n  `SessionProperty`) and fails on anything else — verified to genuinely catch\n  a stripped doc comment as a regression. Also added doc comments to 3 of our\n  own `extension` declarations (on `MCP.Client`, `Elicitation.RequestSchema`,\n  `LanguageModelSession`) that were missing an abstract on the `extension`\n  line itself.\n- `README.md` quick-start embeds `Examples/EchoTool/EchoTool.swift` verbatim\n  between `<!-- ECHOTOOL-SNIPPET:START/END -->` HTML-comment markers.\n  `Tests/FoundationModelsMCPTests/ReadmeQuickStartTests.swift` extracts that\n  span and asserts it's character-for-character identical to the source\n  file. Verified as a genuine red→green cycle, including drift-detection.\n- `docs/swift-sdk-notes.md`'s "No other external dependencies" section was\n  already stale before this task; corrected and noted swift-docc-plugin's\n  build-tool-only status.\n\nAll verification commands green (re-verified after reconstructing a file\nthat an adversarial reviewer's own `git checkout --` cleanup accidentally\nreverted — see comments): `swift build` (0 warnings), `swift build --target\n<Name>` for all 7 Examples, `swift test` (222/222 tests, 23 suites),\n`swift package generate-documentation --target FoundationModelsMCP\n--warnings-as-errors` (exit 0, 0 warnings), and\n`python3 Scripts/check-docc-coverage.py` against the coverage report (OK,\n202 symbols, 0 outside the allowlist).\n\n## Review Findings (2026-07-05 01:42)\n\n- [x] `Scripts/check-docc-coverage.py:68` — Public function `is_allowlisted` lacks a docstring — callers cannot understand its contract or logic without reading the implementation. Add a docstring explaining the function's purpose, parameters, and return value. Example: `"""Check if a kind/path pair is allowlisted and needs no documentation.\n\nReturns True if the kind is in UNFIXABLE_KINDS or the path matches an UNFIXABLE_MEMBER_SUFFIXES entry."""` before the implementation.\n- [x] `Scripts/check-docc-coverage.py:107` — The prefix "check-docc-coverage: " appears as a hardcoded string literal in error/output messages at 3 locations (lines 107, 123, 142). Per rule-of-three, this repeated literal should be extracted to a named constant so it changes in one place. Define `SCRIPT_PREFIX = "check-docc-coverage: "` at the top of `main()` or as a module constant, then use it in all three print statements: `print(f"{SCRIPT_PREFIX}...` instead of repeating the literal.\n- [x] `Sources/FoundationModelsMCP/MCPElicitationTool.swift:207` — First parameter of `stringArray` is unlabeled (uses `_`), but this is not a value-preserving conversion. The function extracts and transforms array elements from a Value, so the first parameter should have a label to form a grammatical phrase at call sites. Change to: `private static func stringArray(value: Value?) -> [String]` and update call sites to: `stringArray(value: fields[fieldNamesKey])`, etc.\n- [x] `Sources/FoundationModelsMCP/MCPServer.swift:962` — First parameter of `logStaleGenerationDiscard` is unlabeled (uses `_`), but this is not a value-preserving conversion. Per API Design Guidelines, all parameters except for value-preserving conversions must have labels to form a grammatical phrase at the call site. Change to: `private func logStaleGenerationDiscard(message: Logger.Message, error: (any Error)? = nil)` and update call sites to use: `logStaleGenerationDiscard(message: ..., error: ...)` for grammatical clarity.\n- [x] `Sources/FoundationModelsMCP/MCPServer.swift:1185` — First parameter of `handleProgressNotification` is unlabeled (uses `_`), but this is not a value-preserving conversion. Per API Design Guidelines, all parameters except for value-preserving conversions must have labels to form a grammatical phrase at the call site. Change to: `private func handleProgressNotification(parameters: ProgressNotification.Parameters)` and update the call site at line ~1176 to: `await self.handleProgressNotification(parameters: message.params)`.\n- [x] `Sources/FoundationModelsMCP/MCPServer.swift:1345` — First parameter of `answerElicitation` is unlabeled (uses `_`), but this is not a value-preserving conversion. Per API Design Guidelines, all parameters except for value-preserving conversions must have labels to form a grammatical phrase at the call site. Change to: `private static func answerElicitation(parameters: CreateElicitation.Parameters, coordinator: any ElicitationCoordinator)` and update the call site at line 1333 to: `Self.answerElicitation(parameters: parameters, coordinator: coordinator)`.\n- [x] `Sources/FoundationModelsMCP/MCPToolProvider.swift:7` — The first line of the doc comment does not end with a period. The documentation rule requires: 'The first line is a single-sentence summary ending in a period; any elaboration follows after a blank /// line.'. Restructure the first line to be a complete, standalone summary sentence ending with a period, then follow with elaboration after a blank line. Example: '/// A uniform interface for contributing tools to a `LanguageModelSession`.'.\n- [x] `Sources/FoundationModelsMCP/SchemaConverter.swift:789` — The `scalarString` function is identically duplicated in ToolContentRenderer.swift. Both convert scalar Value to string form using the same switch statement logic. Should be a single shared utility function to avoid maintenance burden and ensure consistency. Extract `scalarString` to a shared utility module (e.g., Sources/FoundationModelsMCP/ValueRendering.swift or similar), then import and call it from both SchemaConverter and ToolContentRenderer.\n- [x] `Sources/FoundationModelsMCP/SchemaConverter.swift:792` — The `scalarString()` function is verbatim-duplicated in ToolContentRenderer.swift. Copies drift out of sync; this logic should be extracted to a shared utility location (e.g., an extension on `Value` or a common utility file). Extract `scalarString()` to a shared location such as a `Value+String.swift` extension or a common utility file, then import and use it from both SchemaConverter and ToolContentRenderer.\n- [x] `Sources/FoundationModelsMCP/ToolContentRenderer.swift:26` — The first line of the doc comment does not end with a period. Documentation should begin with a complete sentence. Restructure the first line to be a complete sentence: 'The maximum character count for any single rendered text unit before trimming.'.\n- [x] `Sources/FoundationModelsMCP/ToolContentRenderer.swift:176` — The first line of the doc comment does not end with a period. Documentation should begin with a complete summary sentence. Make the first line a complete sentence: '/// Trims text to a budget by replacing the middle with an elision marker.'.\n- [x] `Sources/FoundationModelsMCP/ToolContentRenderer.swift:207` — The first line of the doc comment does not end with a period. Documentation should begin with a complete summary sentence. Rewrite the first line to be a complete sentence, then elaborate: '/// Renders and validates structured content as sorted-key JSON.'.\n- [x] `Sources/FoundationModelsMCP/ToolContentRenderer.swift:235` — The first line of the doc comment does not end with a period. Documentation should begin with a complete summary sentence. Make the first line a complete sentence: '/// Renders a Value as sorted-key JSON text with deterministic output.'.\n- [x] `Sources/FoundationModelsMCP/ToolContentRenderer.swift:247` — The first line of the doc comment does not end with a period. Documentation should begin with a complete summary sentence. Make the first line a complete sentence: '/// Validates a value against a pinned shallow subset of JSON Schema.'.\n- [x] `Sources/FoundationModelsMCP/ToolContentRenderer.swift:518` — The `scalarString` function is identically duplicated in SchemaConverter.swift. Both convert scalar Value to string form using the same switch statement logic. Should be a single shared utility function to avoid maintenance burden and ensure consistency. Extract `scalarString` to a shared utility module (e.g., Sources/FoundationModelsMCP/ValueRendering.swift or similar), then import and call it from both SchemaConverter and ToolContentRenderer.\n- [x] `Sources/FoundationModelsMCP/ToolContentRenderer.swift:520` — The `scalarString()` function is verbatim-duplicated in SchemaConverter.swift. Copies drift out of sync; this logic should be extracted to a shared utility location. Extract `scalarString()` to a shared location such as a `Value+String.swift` extension or a common utility file, then import and use it from both SchemaConverter and ToolContentRenderer.\n\n## Review fixes (2026-07-05, round 2)\n\nAll 16 review findings fixed:\n- `Scripts/check-docc-coverage.py`: added a docstring to `is_allowlisted`; extracted the repeated `"check-docc-coverage: "` literal to a module-level `SCRIPT_PREFIX` constant, used at all 3 print sites.\n- Added explicit argument labels to 4 previously-unlabeled first parameters and updated every call site: `MCPElicitationTool.stringArray(value:)`, `MCPServer.logStaleGenerationDiscard(message:error:)`, `MCPServer.handleProgressNotification(parameters:)` (including its `///` doc-comment cross-references), and `MCPServer.answerElicitation(parameters:coordinator:)`.\n- Fixed 6 doc-comment first lines to be complete, period-terminated sentences with a blank `///` line before elaboration: `MCPToolProvider.swift` (protocol-level doc) and 5 in `ToolContentRenderer.swift` (`defaultRenderBudget`, `trimmed(text:budget:)`, `renderStructuredContent`, `jsonString(for:)`, `validate(value:against:)`).\n- Extracted the duplicated `scalarString` function out of `SchemaConverter.swift` and `ToolContentRenderer.swift` into a single shared free function in a new file, `Sources/FoundationModelsMCP/Value+ScalarString.swift`, called from both (both are in the same `FoundationModelsMCP` module, so no import needed).\n\nVerification, all fresh and green: `swift build` (0 warnings), `swift test` (222/222 tests, 23 suites), `swift package generate-documentation --target FoundationModelsMCP --warnings-as-errors` (exit 0, 0 warnings), and `python3 Scripts/check-docc-coverage.py` against a fresh coverage report (OK, 202 symbols, 0 outside the allowlist — unchanged from before, confirming no coverage regression from the parameter-label/doc-comment/extraction changes).

@@ -1,11 +1,11 @@
 import FoundationModels
 import Logging
 
-/// A uniform way to contribute one or more tools to a `LanguageModelSession`
-/// — the single question both ``MCPTool`` (one tool) and ``MCPServer`` (many
-/// tools, discovered once connected) answer the same way.
+/// A uniform interface for contributing tools to a `LanguageModelSession`.
 ///
-/// Conforming types are combined via ``resolveSessionTools(from:logger:)``,
+/// The single question both ``MCPTool`` (one tool) and ``MCPServer`` (many
+/// tools, discovered once connected) answer the same way. Conforming types
+/// are combined via ``resolveSessionTools(from:logger:)``,
 /// the function backing the `LanguageModelSession.init(model:mcp:instructions:)`
 /// convenience initializer — see `plan.md`'s "Uniform entry point" section for
 /// the full rationale.

@@ -256,7 +256,7 @@ public struct MCPElicitationTool: FoundationModels.Tool {
     ///   dictionary lookup like `fields[fieldNamesKey]`.
     /// - Returns: The array's elements coerced to `String`, or an empty
     ///   array if `value` is `nil` or not a `.array`.
-    private static func stringArray(_ value: Value?) -> [String] {
+    private static func stringArray(value: Value?) -> [String] {
         guard case .array(let elements)? = value else { return [] }
         return elements.compactMap(\.stringValue)
     }
@@ -273,12 +273,12 @@ public struct MCPElicitationTool: FoundationModels.Tool {
      ///   `secret`/`format: "url"` markers `Elicitation.RequestSchema.requiresURLModeRouting`
     ///   checks for.
     private static func makeRequestSchema(from fields: [String: Value]) -> Elicitation.RequestSchema {
-        let fieldNames = stringArray(fields[fieldNamesKey])
-        let fieldTypes = stringArray(fields[fieldTypesKey])
-        let fieldDescriptions = stringArray(fields[fieldDescriptionsKey])
-        let requiredFieldNames = Set(stringArray(fields[requiredFieldNamesKey]))
-        let sensitiveFieldNames = Set(stringArray(fields[sensitiveFieldNamesKey]))
-        let urlFormatFieldNames = Set(stringArray(fields[urlFormatFieldNamesKey]))
+        let fieldNames = stringArray(value: fields[fieldNamesKey])
+        let fieldTypes = stringArray(value: fields[fieldTypesKey])
+        let fieldDescriptions = stringArray(value: fields[fieldDescriptionsKey])
+        let requiredFieldNames = Set(stringArray(value: fields[requiredFieldNamesKey]))
+        let sensitiveFieldNames = Set(stringArray(value: fields[sensitiveFieldNamesKey]))
+        let urlFormatFieldNames = Set(stringArray(value: fields[urlFormatFieldNamesKey]))
 
         var properties: [String: Value] = [:]
         for (index, name) in fieldNames.enumerated() {
