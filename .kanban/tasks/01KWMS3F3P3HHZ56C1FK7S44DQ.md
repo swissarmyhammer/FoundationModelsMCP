@@ -34,8 +34,8 @@ comments:
   timestamp: 2026-07-05T01:56:30.880516+00:00
 depends_on:
 - 01KWMS25WBFV42NGTCX3HKWHZP
-position_column: doing
-position_ordinal: '80'
+position_column: done
+position_ordinal: '9180'
 title: 'M8: freeze the live catalog API with a stub consumer'
 ---
 ## What
