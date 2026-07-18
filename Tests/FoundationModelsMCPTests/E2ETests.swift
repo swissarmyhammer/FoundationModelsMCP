@@ -193,10 +193,17 @@ struct E2ETests {
     /// argument — parsed here rather than through `Bundle.allBundles`, since
     /// that `.xctest` bundle is loaded without ever registering itself as an
     /// `NSBundle` (confirmed empirically: `Bundle.allBundles` only lists the
-    /// helper's own bundle during a `swift test` run). Falls back to this
-    /// process's own executable directory when that argument is absent,
-    /// which is already the products directory when a test binary is
-    /// invoked directly rather than through the helper.
+    /// helper's own bundle during a `swift test` run).
+    ///
+    /// CI's gated integration job instead invokes the built bundle directly
+    /// via `xcrun xctest <bundle>` (see `swift-ci.yaml`'s integration job),
+    /// which never sets `--test-bundle-path` — there the bundle path is
+    /// `xctest`'s own positional argument, found here by its `.xctest`
+    /// suffix; the bundle's parent directory is the products directory.
+    ///
+    /// Falls back to this process's own executable directory when neither
+    /// applies, which is already the products directory when a test binary
+    /// is invoked directly rather than through the helper.
     ///
     /// - Returns: The products directory containing this test's sibling
     ///   build artifacts, including `MCPTestServerCLI`.
@@ -209,6 +216,9 @@ struct E2ETests {
                 .deletingLastPathComponent()  // .../<Bundle>.xctest/Contents
                 .deletingLastPathComponent()  // .../<Bundle>.xctest
                 .deletingLastPathComponent()  // the products directory itself
+        }
+        if let bundleArgument = CommandLine.arguments.first(where: { $0.hasSuffix(".xctest") }) {
+            return URL(fileURLWithPath: bundleArgument).deletingLastPathComponent()
         }
         return URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent()
     }
