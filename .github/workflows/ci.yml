@@ -19,3 +19,5 @@ jobs:
         ElicitingAgent CatalogBrowser DynamicToolset
       docc-target: FoundationModelsMCP
       docc-coverage-script: Scripts/check-docc-coverage.py
+      integration-gate-env: FOUNDATIONMODELSMCP_E2E
+      integration-xctest-glob: "*MCPTests.xctest"
